@@ -73,6 +73,8 @@ const PathOrBlob = union(enum) {
 };
 
 pub const Blob = struct {
+    const bloblog = Output.scoped(.Blob, false);
+
     pub usingnamespace JSC.Codegen.JSBlob;
 
     size: SizeType = 0,
@@ -305,7 +307,7 @@ pub const Blob = struct {
             },
         );
     }
-    pub fn writeFormat(this: *const Blob, formatter: *JSC.Formatter, writer: anytype, comptime enable_ansi_colors: bool) !void {
+    pub fn writeFormat(this: *const Blob, comptime Formatter: type, formatter: *Formatter, writer: anytype, comptime enable_ansi_colors: bool) !void {
         const Writer = @TypeOf(writer);
 
         if (this.isDetached()) {
@@ -435,6 +437,7 @@ pub const Blob = struct {
                 },
                 // .InlineBlob,
                 .InternalBlob,
+                .Null,
                 .Empty,
                 .Blob,
                 => {
@@ -665,6 +668,7 @@ pub const Blob = struct {
                     .Used,
                     .Empty,
                     .Blob,
+                    .Null,
                     => {
                         break :brk response.body.use();
                     },
@@ -699,6 +703,7 @@ pub const Blob = struct {
                     .Used,
                     .Empty,
                     .Blob,
+                    .Null,
                     => {
                         break :brk request.body.use();
                     },
@@ -1006,7 +1011,7 @@ pub const Blob = struct {
     pub const Store = struct {
         data: Data,
 
-        mime_type: MimeType = MimeType.other,
+        mime_type: MimeType = MimeType.none,
         ref_count: u32 = 0,
         is_all_ascii: ?bool = null,
         allocator: std.mem.Allocator,
@@ -1183,11 +1188,11 @@ pub const Blob = struct {
                                 else
                                     this.file_blob.store.?.data.file.pathlike.path;
 
-                                this.system_error = .{
-                                    .syscall = ZigString.init("open"),
-                                    .code = ZigString.init(bun.asByteSlice(@errorName(this.errno.?))),
-                                    .path = ZigString.init(path_string.slice()),
-                                };
+                                this.system_error = (JSC.Node.Syscall.Error{
+                                    .errno = @intCast(JSC.Node.Syscall.Error.Int, -completion.result),
+                                    .path = path_string.slice(),
+                                    .syscall = .open,
+                                }).toSystemError();
 
                                 // assert we never end up reusing the memory
                                 std.debug.assert(@ptrToInt(this.system_error.?.path.slice().ptr) != @ptrToInt(path_buffer));
@@ -1428,9 +1433,10 @@ pub const Blob = struct {
                     this.doClose();
                 }
 
-                var io_task = this.io_task.?;
-                this.io_task = null;
-                io_task.onFinish();
+                if (this.io_task) |io_task| {
+                    io_task.onFinish();
+                    this.io_task = null;
+                }
             }
 
             fn resolveSize(this: *ReadFile, fd: bun.FileDescriptor) void {
@@ -1652,9 +1658,10 @@ pub const Blob = struct {
                     this.doClose();
                 }
 
-                var io_task = this.io_task.?;
-                this.io_task = null;
-                io_task.onFinish();
+                if (this.io_task) |io_task| {
+                    io_task.onFinish();
+                    this.io_task = null;
+                }
             }
 
             fn runWithFD(this: *WriteFile, fd: bun.FileDescriptor) void {
@@ -2384,7 +2391,7 @@ pub const Blob = struct {
         callframe: *JSC.CallFrame,
     ) callconv(.C) JSC.JSValue {
         var allocator = globalThis.allocator();
-        var arguments_ = callframe.arguments(2);
+        var arguments_ = callframe.arguments(3);
         var args = arguments_.ptr[0..arguments_.len];
 
         if (this.size == 0) {
@@ -2403,51 +2410,84 @@ pub const Blob = struct {
         // If the optional end parameter is not used as a parameter when making this call, let relativeEnd be size.
         var relativeEnd: i64 = @intCast(i64, this.size);
 
+        if (args.ptr[0].isString()) {
+            args.ptr[2] = args.ptr[0];
+            args.ptr[1] = .zero;
+            args.ptr[0] = .zero;
+            args.len = 3;
+        } else if (args.ptr[1].isString()) {
+            args.ptr[2] = args.ptr[1];
+            args.ptr[1] = .zero;
+            args.len = 3;
+        }
+
         var args_iter = JSC.Node.ArgumentsSlice.init(globalThis.bunVM(), args);
         if (args_iter.nextEat()) |start_| {
-            const start = start_.toInt64();
-            if (start < 0) {
-                // If the optional start parameter is negative, let relativeStart be start + size.
-                relativeStart = @intCast(i64, @max(start + @intCast(i64, this.size), 0));
-            } else {
-                // Otherwise, let relativeStart be start.
-                relativeStart = @min(@intCast(i64, start), @intCast(i64, this.size));
+            if (start_.isNumber()) {
+                const start = start_.toInt64();
+                if (start < 0) {
+                    // If the optional start parameter is negative, let relativeStart be start + size.
+                    relativeStart = @intCast(i64, @max(start +% @intCast(i64, this.size), 0));
+                } else {
+                    // Otherwise, let relativeStart be start.
+                    relativeStart = @min(@intCast(i64, start), @intCast(i64, this.size));
+                }
             }
         }
 
         if (args_iter.nextEat()) |end_| {
-            const end = end_.toInt64();
-            // If end is negative, let relativeEnd be max((size + end), 0).
-            if (end < 0) {
-                // If the optional start parameter is negative, let relativeStart be start + size.
-                relativeEnd = @intCast(i64, @max(end + @intCast(i64, this.size), 0));
-            } else {
-                // Otherwise, let relativeStart be start.
-                relativeEnd = @min(@intCast(i64, end), @intCast(i64, this.size));
+            if (end_.isNumber()) {
+                const end = end_.toInt64();
+                // If end is negative, let relativeEnd be max((size + end), 0).
+                if (end < 0) {
+                    // If the optional start parameter is negative, let relativeStart be start + size.
+                    relativeEnd = @intCast(i64, @max(end +% @intCast(i64, this.size), 0));
+                } else {
+                    // Otherwise, let relativeStart be start.
+                    relativeEnd = @min(@intCast(i64, end), @intCast(i64, this.size));
+                }
             }
         }
 
         var content_type: string = "";
+        var content_type_was_allocated = false;
         if (args_iter.nextEat()) |content_type_| {
-            if (content_type_.isString()) {
-                var zig_str = content_type_.getZigString(globalThis);
-                var slicer = zig_str.toSlice(bun.default_allocator);
-                defer slicer.deinit();
-                var slice = slicer.slice();
-                var content_type_buf = allocator.alloc(u8, slice.len) catch unreachable;
-                content_type = strings.copyLowercase(slice, content_type_buf);
+            inner: {
+                if (content_type_.isString()) {
+                    var zig_str = content_type_.getZigString(globalThis);
+                    var slicer = zig_str.toSlice(bun.default_allocator);
+                    defer slicer.deinit();
+                    var slice = slicer.slice();
+                    if (!strings.isAllASCII(slice)) {
+                        break :inner;
+                    }
+
+                    if (globalThis.bunVM().mimeType(slice)) |mime| {
+                        content_type = mime.value;
+                        break :inner;
+                    }
+
+                    content_type_was_allocated = slice.len > 0;
+                    var content_type_buf = allocator.alloc(u8, slice.len) catch unreachable;
+                    content_type = strings.copyLowercase(slice, content_type_buf);
+                }
             }
         }
 
-        const len = @intCast(SizeType, @max(relativeEnd - relativeStart, 0));
+        const len = @intCast(SizeType, @max(relativeEnd -| relativeStart, 0));
 
         // This copies over the is_all_ascii flag
         // which is okay because this will only be a <= slice
         var blob = this.dupe();
         blob.offset = @intCast(SizeType, relativeStart);
         blob.size = len;
+
+        // infer the content type if it was not specified
+        if (content_type.len == 0 and this.content_type.len > 0 and !this.content_type_allocated)
+            content_type = this.content_type;
+
         blob.content_type = content_type;
-        blob.content_type_allocated = content_type.len > 0;
+        blob.content_type_allocated = content_type_was_allocated;
 
         var blob_ = allocator.create(Blob) catch unreachable;
         blob_.* = blob;
@@ -2459,31 +2499,18 @@ pub const Blob = struct {
         this: *Blob,
         globalThis: *JSC.JSGlobalObject,
     ) callconv(.C) JSValue {
-        return ZigString.init(this.content_type).toValue(globalThis);
-    }
-
-    pub fn setType(
-        this: *Blob,
-        globalThis: *JSC.JSGlobalObject,
-        value: JSC.JSValue,
-    ) callconv(.C) bool {
-        var zig_str = value.getZigString(globalThis);
-        if (zig_str.is16Bit())
-            return false;
-
-        var slice = zig_str.trimmedSlice();
-        if (strings.eql(slice, this.content_type))
-            return true;
-
-        const prev_content_type = this.content_type;
-        {
-            defer if (this.content_type_allocated) bun.default_allocator.free(prev_content_type);
-            var content_type_buf = globalThis.allocator().alloc(u8, slice.len) catch unreachable;
-            this.content_type = strings.copyLowercase(slice, content_type_buf);
+        if (this.content_type.len > 0) {
+            if (this.content_type_allocated) {
+                return ZigString.init(this.content_type).toValue(globalThis);
+            }
+            return ZigString.init(this.content_type).toValueGC(globalThis);
         }
 
-        this.content_type_allocated = true;
-        return true;
+        if (this.store) |store| {
+            return ZigString.init(store.mime_type.value).toValue(globalThis);
+        }
+
+        return ZigString.Empty.toValue(globalThis);
     }
 
     pub fn getSize(this: *Blob, _: *JSC.JSGlobalObject) callconv(.C) JSValue {
@@ -2595,13 +2622,22 @@ pub const Blob = struct {
                         // Normative conditions for this member are provided
                         // in the § 3.1 Constructors.
                         if (options.get(globalThis, "type")) |content_type| {
-                            if (content_type.isString()) {
-                                var content_type_str = content_type.toSlice(globalThis, bun.default_allocator);
-                                defer content_type_str.deinit();
-                                var slice = content_type_str.slice();
-                                var content_type_buf = allocator.alloc(u8, slice.len) catch unreachable;
-                                blob.content_type = strings.copyLowercase(slice, content_type_buf);
-                                blob.content_type_allocated = true;
+                            inner: {
+                                if (content_type.isString()) {
+                                    var content_type_str = content_type.toSlice(globalThis, bun.default_allocator);
+                                    defer content_type_str.deinit();
+                                    var slice = content_type_str.slice();
+                                    if (!strings.isAllASCII(slice)) {
+                                        break :inner;
+                                    }
+                                    if (globalThis.bunVM().mimeType(slice)) |mime| {
+                                        blob.content_type = mime.value;
+                                        break :inner;
+                                    }
+                                    var content_type_buf = allocator.alloc(u8, slice.len) catch unreachable;
+                                    blob.content_type = strings.copyLowercase(slice, content_type_buf);
+                                    blob.content_type_allocated = true;
+                                }
                             }
                         }
                     }
@@ -2822,6 +2858,8 @@ pub const Blob = struct {
     }
 
     pub fn doReadFile(this: *Blob, comptime Function: anytype, global: *JSGlobalObject) JSValue {
+        bloblog("doReadFile", .{});
+
         const Handler = NewReadFileHandler(Function);
         var promise = JSPromise.create(global);
 
@@ -2846,6 +2884,7 @@ pub const Blob = struct {
         ) catch unreachable;
         var read_file_task = Store.ReadFile.ReadFileTask.createOnJSThread(bun.default_allocator, global, file_read) catch unreachable;
         read_file_task.schedule();
+        bloblog("doReadFile: read_file_task scheduled", .{});
         return promise_value;
     }
 
@@ -2929,13 +2968,11 @@ pub const Blob = struct {
 
         var view_ = this.sharedView();
 
-        if (view_.len == 0)
-            return ZigString.Empty.toValue(global);
-
         return toJSONWithBytes(this, global, view_, lifetime);
     }
 
     pub fn toJSONWithBytes(this: *Blob, global: *JSGlobalObject, buf: []const u8, comptime lifetime: Lifetime) JSValue {
+        if (buf.len == 0) return global.createSyntaxErrorInstance("Unexpected end of JSON input", .{});
         // null == unknown
         // false == can't be
         const could_be_all_ascii = this.is_all_ascii orelse this.store.?.is_all_ascii;
@@ -3006,12 +3043,13 @@ pub const Blob = struct {
     }
 
     pub fn toArrayBuffer(this: *Blob, global: *JSGlobalObject, comptime lifetime: Lifetime) JSValue {
+        bloblog("toArrayBuffer", .{});
         if (this.needsToReadFile()) {
             return this.doReadFile(toArrayBufferWithBytes, global);
         }
 
         var view_ = this.sharedView();
-
+        bloblog("sharedView {d}", .{view_.len});
         if (view_.len == 0)
             return JSC.ArrayBuffer.create(global, "", .ArrayBuffer);
 

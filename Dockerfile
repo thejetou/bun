@@ -402,6 +402,7 @@ ARG CPU_TARGET
 ENV CPU_TARGET=${CPU_TARGET}
 
 COPY Makefile ${BUN_DIR}/Makefile
+COPY .prettierrc.cjs ${BUN_DIR}/.prettierrc.cjs
 
 WORKDIR $BUN_DIR
 
@@ -460,19 +461,20 @@ ARG CPU_TARGET
 ENV CPU_TARGET=${CPU_TARGET}
 
 COPY Makefile ${BUN_DIR}/Makefile
+COPY .prettierrc.cjs ${BUN_DIR}/.prettierrc.cjs
 
 WORKDIR $BUN_DIR
 
 ENV JSC_BASE_DIR=${WEBKIT_DIR}
 ENV LIB_ICU_PATH=${WEBKIT_DIR}/lib
 
-# Required for `make webcrypto`
+# Required for webcrypto bindings
 COPY src/deps/boringssl/include ${BUN_DIR}/src/deps/boringssl/include
 
 ENV CCACHE_DIR=/ccache
 
-RUN --mount=type=cache,target=/ccache cd $BUN_DIR && mkdir -p src/bun.js/bindings-obj &&  rm -rf $HOME/.cache zig-cache && mkdir -p $BUN_RELEASE_DIR && make webcrypto && \
-    make release-bindings -j10 && mv ${BUN_DEPS_OUT_DIR}/libwebcrypto.a /tmp && mv src/bun.js/bindings-obj/* /tmp
+RUN --mount=type=cache,target=/ccache cd $BUN_DIR && mkdir -p src/bun.js/bindings-obj &&  rm -rf $HOME/.cache zig-cache && mkdir -p $BUN_RELEASE_DIR && \
+    make release-bindings -j10 && mv src/bun.js/bindings-obj/* /tmp
 
 FROM bun-base as sqlite
 
@@ -492,6 +494,7 @@ ENV CCACHE_DIR=/ccache
 
 COPY Makefile ${BUN_DIR}/Makefile
 COPY src/bun.js/bindings/sqlite ${BUN_DIR}/src/bun.js/bindings/sqlite
+COPY .prettierrc.cjs ${BUN_DIR}/.prettierrc.cjs
 
 WORKDIR $BUN_DIR
 
@@ -503,7 +506,6 @@ RUN --mount=type=cache,target=/ccache cd $BUN_DIR && make sqlite
 FROM scratch as build_release_cpp
 
 COPY --from=compile_cpp /tmp/*.o /
-COPY --from=compile_cpp /tmp/libwebcrypto.a /
 
 FROM prepare_release as build_release
 
@@ -519,6 +521,7 @@ ARG CPU_TARGET
 ENV CPU_TARGET=${CPU_TARGET}
 
 COPY Makefile ${BUN_DIR}/Makefile
+COPY .prettierrc.cjs ${BUN_DIR}/.prettierrc.cjs
 
 WORKDIR $BUN_DIR
 

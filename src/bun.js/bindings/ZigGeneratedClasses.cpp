@@ -124,9 +124,6 @@ JSC_DECLARE_HOST_FUNCTION(BlobPrototype__textCallback);
 extern "C" JSC::EncodedJSValue BlobPrototype__getType(void* ptr, JSC::JSGlobalObject* lexicalGlobalObject);
 JSC_DECLARE_CUSTOM_GETTER(BlobPrototype__typeGetterWrap);
 
-extern "C" bool BlobPrototype__setType(void* ptr, JSC::JSGlobalObject* lexicalGlobalObject, JSC::EncodedJSValue value);
-JSC_DECLARE_CUSTOM_SETTER(BlobPrototype__typeSetterWrap);
-
 extern "C" EncodedJSValue BlobPrototype__getWriter(void* ptr, JSC::JSGlobalObject* lexicalGlobalObject, JSC::CallFrame* callFrame);
 JSC_DECLARE_HOST_FUNCTION(BlobPrototype__writerCallback);
 
@@ -140,7 +137,7 @@ static const HashTableValue JSBlobPrototypeTableValues[] = {
     { "slice"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function | PropertyAttribute::DontDelete), NoIntrinsic, { HashTableValue::NativeFunctionType, BlobPrototype__sliceCallback, 2 } },
     { "stream"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function | PropertyAttribute::DontDelete), NoIntrinsic, { HashTableValue::NativeFunctionType, BlobPrototype__streamCallback, 1 } },
     { "text"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function | PropertyAttribute::DontDelete), NoIntrinsic, { HashTableValue::NativeFunctionType, BlobPrototype__textCallback, 0 } },
-    { "type"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor | JSC::PropertyAttribute::DOMAttribute | PropertyAttribute::DontDelete), NoIntrinsic, { HashTableValue::GetterSetterType, BlobPrototype__typeGetterWrap, BlobPrototype__typeSetterWrap } },
+    { "type"_s, static_cast<unsigned>(JSC::PropertyAttribute::ReadOnly | JSC::PropertyAttribute::CustomAccessor | JSC::PropertyAttribute::DOMAttribute | PropertyAttribute::DontDelete), NoIntrinsic, { HashTableValue::GetterSetterType, BlobPrototype__typeGetterWrap, 0 } },
     { "writer"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function | PropertyAttribute::DontDelete), NoIntrinsic, { HashTableValue::NativeFunctionType, BlobPrototype__writerCallback, 1 } }
 };
 
@@ -275,17 +272,6 @@ JSC_DEFINE_CUSTOM_GETTER(BlobPrototype__typeGetterWrap, (JSGlobalObject * lexica
     JSC::EnsureStillAliveScope thisArg = JSC::EnsureStillAliveScope(thisObject);
     JSC::EncodedJSValue result = BlobPrototype__getType(thisObject->wrapped(), globalObject);
     RETURN_IF_EXCEPTION(throwScope, {});
-    RELEASE_AND_RETURN(throwScope, result);
-}
-
-JSC_DEFINE_CUSTOM_SETTER(BlobPrototype__typeSetterWrap, (JSGlobalObject * lexicalGlobalObject, EncodedJSValue thisValue, EncodedJSValue encodedValue, PropertyName attributeName))
-{
-    auto& vm = lexicalGlobalObject->vm();
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    JSBlob* thisObject = jsCast<JSBlob*>(JSValue::decode(thisValue));
-    JSC::EnsureStillAliveScope thisArg = JSC::EnsureStillAliveScope(thisObject);
-    auto result = BlobPrototype__setType(thisObject->wrapped(), lexicalGlobalObject, encodedValue);
-
     RELEASE_AND_RETURN(throwScope, result);
 }
 
@@ -2342,6 +2328,175 @@ void JSExpect::visitOutputConstraintsImpl(JSCell* cell, Visitor& visitor)
 }
 
 DEFINE_VISIT_OUTPUT_CONSTRAINTS(JSExpect);
+class JSExpectAnyPrototype final : public JSC::JSNonFinalObject {
+public:
+    using Base = JSC::JSNonFinalObject;
+
+    static JSExpectAnyPrototype* create(JSC::VM& vm, JSGlobalObject* globalObject, JSC::Structure* structure)
+    {
+        JSExpectAnyPrototype* ptr = new (NotNull, JSC::allocateCell<JSExpectAnyPrototype>(vm)) JSExpectAnyPrototype(vm, globalObject, structure);
+        ptr->finishCreation(vm, globalObject);
+        return ptr;
+    }
+
+    DECLARE_INFO;
+    template<typename CellType, JSC::SubspaceAccess>
+    static JSC::GCClient::IsoSubspace* subspaceFor(JSC::VM& vm)
+    {
+        return &vm.plainObjectSpace();
+    }
+    static JSC::Structure* createStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::JSValue prototype)
+    {
+        return JSC::Structure::create(vm, globalObject, prototype, JSC::TypeInfo(JSC::ObjectType, StructureFlags), info());
+    }
+
+private:
+    JSExpectAnyPrototype(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::Structure* structure)
+        : Base(vm, structure)
+    {
+    }
+
+    void finishCreation(JSC::VM&, JSC::JSGlobalObject*);
+};
+
+extern "C" void ExpectAnyClass__finalize(void*);
+extern "C" JSC_DECLARE_HOST_FUNCTION(ExpectAnyClass__call);
+
+STATIC_ASSERT_ISO_SUBSPACE_SHARABLE(JSExpectAnyPrototype, JSExpectAnyPrototype::Base);
+
+static const HashTableValue JSExpectAnyPrototypeTableValues[] = {};
+
+const ClassInfo JSExpectAnyPrototype::s_info = { "ExpectAny"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSExpectAnyPrototype) };
+
+extern "C" void ExpectAnyPrototype__constructorValueSetCachedValue(JSC::EncodedJSValue thisValue, JSC::JSGlobalObject* globalObject, JSC::EncodedJSValue value)
+{
+    auto& vm = globalObject->vm();
+    auto* thisObject = jsCast<JSExpectAny*>(JSValue::decode(thisValue));
+    thisObject->m_constructorValue.set(vm, thisObject, JSValue::decode(value));
+}
+
+extern "C" EncodedJSValue ExpectAnyPrototype__constructorValueGetCachedValue(JSC::EncodedJSValue thisValue)
+{
+    auto* thisObject = jsCast<JSExpectAny*>(JSValue::decode(thisValue));
+    return JSValue::encode(thisObject->m_constructorValue.get());
+}
+
+void JSExpectAnyPrototype::finishCreation(JSC::VM& vm, JSC::JSGlobalObject* globalObject)
+{
+    Base::finishCreation(vm);
+
+    JSC_TO_STRING_TAG_WITHOUT_TRANSITION();
+}
+
+JSExpectAny::~JSExpectAny()
+{
+    if (m_ctx) {
+        ExpectAnyClass__finalize(m_ctx);
+    }
+}
+void JSExpectAny::destroy(JSCell* cell)
+{
+    static_cast<JSExpectAny*>(cell)->JSExpectAny::~JSExpectAny();
+}
+
+const ClassInfo JSExpectAny::s_info = { "ExpectAny"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSExpectAny) };
+
+void JSExpectAny::finishCreation(VM& vm)
+{
+    Base::finishCreation(vm);
+    ASSERT(inherits(info()));
+}
+
+JSExpectAny* JSExpectAny::create(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::Structure* structure, void* ctx)
+{
+    JSExpectAny* ptr = new (NotNull, JSC::allocateCell<JSExpectAny>(vm)) JSExpectAny(vm, structure, ctx);
+    ptr->finishCreation(vm);
+    return ptr;
+}
+
+extern "C" void* ExpectAny__fromJS(JSC::EncodedJSValue value)
+{
+    JSC::JSValue decodedValue = JSC::JSValue::decode(value);
+    if (decodedValue.isEmpty() || !decodedValue.isCell())
+        return nullptr;
+
+    JSC::JSCell* cell = decodedValue.asCell();
+    JSExpectAny* object = JSC::jsDynamicCast<JSExpectAny*>(cell);
+
+    if (!object)
+        return nullptr;
+
+    return object->wrapped();
+}
+
+extern "C" bool ExpectAny__dangerouslySetPtr(JSC::EncodedJSValue value, void* ptr)
+{
+    JSExpectAny* object = JSC::jsDynamicCast<JSExpectAny*>(JSValue::decode(value));
+    if (!object)
+        return false;
+
+    object->m_ctx = ptr;
+    return true;
+}
+
+extern "C" const size_t ExpectAny__ptrOffset = JSExpectAny::offsetOfWrapped();
+
+void JSExpectAny::analyzeHeap(JSCell* cell, HeapAnalyzer& analyzer)
+{
+    auto* thisObject = jsCast<JSExpectAny*>(cell);
+    if (void* wrapped = thisObject->wrapped()) {
+        // if (thisObject->scriptExecutionContext())
+        //     analyzer.setLabelForCell(cell, "url " + thisObject->scriptExecutionContext()->url().string());
+    }
+    Base::analyzeHeap(cell, analyzer);
+}
+
+JSObject* JSExpectAny::createPrototype(VM& vm, JSDOMGlobalObject* globalObject)
+{
+    return JSExpectAnyPrototype::create(vm, globalObject, JSExpectAnyPrototype::createStructure(vm, globalObject, globalObject->objectPrototype()));
+}
+
+extern "C" EncodedJSValue ExpectAny__create(Zig::GlobalObject* globalObject, void* ptr)
+{
+    auto& vm = globalObject->vm();
+    JSC::Structure* structure = globalObject->JSExpectAnyStructure();
+    JSExpectAny* instance = JSExpectAny::create(vm, globalObject, structure, ptr);
+
+    return JSValue::encode(instance);
+}
+
+template<typename Visitor>
+void JSExpectAny::visitChildrenImpl(JSCell* cell, Visitor& visitor)
+{
+    JSExpectAny* thisObject = jsCast<JSExpectAny*>(cell);
+    ASSERT_GC_OBJECT_INHERITS(thisObject, info());
+    Base::visitChildren(thisObject, visitor);
+    visitor.append(thisObject->m_constructorValue);
+}
+
+DEFINE_VISIT_CHILDREN(JSExpectAny);
+
+template<typename Visitor>
+void JSExpectAny::visitAdditionalChildren(Visitor& visitor)
+{
+    JSExpectAny* thisObject = this;
+    ASSERT_GC_OBJECT_INHERITS(thisObject, info());
+    visitor.append(thisObject->m_constructorValue);
+
+    ;
+}
+
+DEFINE_VISIT_ADDITIONAL_CHILDREN(JSExpectAny);
+
+template<typename Visitor>
+void JSExpectAny::visitOutputConstraintsImpl(JSCell* cell, Visitor& visitor)
+{
+    JSExpectAny* thisObject = jsCast<JSExpectAny*>(cell);
+    ASSERT_GC_OBJECT_INHERITS(thisObject, info());
+    thisObject->visitAdditionalChildren<Visitor>(visitor);
+}
+
+DEFINE_VISIT_OUTPUT_CONSTRAINTS(JSExpectAny);
 class JSFileSystemRouterPrototype final : public JSC::JSNonFinalObject {
 public:
     using Base = JSC::JSNonFinalObject;

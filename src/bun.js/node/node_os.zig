@@ -67,8 +67,7 @@ pub const Os = struct {
             const fields = comptime std.meta.fieldNames(CPUTimes);
             const ret = JSC.JSValue.createEmptyObject(globalThis, fields.len);
             inline for (fields) |fieldName| {
-                ret.put(globalThis, JSC.ZigString.static(fieldName),
-                                     JSC.JSValue.jsNumberFromUint64(@field(self, fieldName)));
+                ret.put(globalThis, JSC.ZigString.static(fieldName), JSC.JSValue.jsNumberFromUint64(@field(self, fieldName)));
             }
             return ret;
         }
@@ -78,27 +77,27 @@ pub const Os = struct {
         JSC.markBinding(@src());
 
         return if (comptime Environment.isLinux)
-                   cpusImplLinux(globalThis) catch {
-                        const err = JSC.SystemError{
-                            .message = JSC.ZigString.init("Failed to get cpu information"),
-                            .code = JSC.ZigString.init(@as(string, @tagName(JSC.Node.ErrorCode.ERR_SYSTEM_ERROR))),
-                        };
+            cpusImplLinux(globalThis) catch {
+                const err = JSC.SystemError{
+                    .message = JSC.ZigString.init("Failed to get cpu information"),
+                    .code = JSC.ZigString.init(@as(string, @tagName(JSC.Node.ErrorCode.ERR_SYSTEM_ERROR))),
+                };
 
-                        globalThis.vm().throwError(globalThis, err.toErrorInstance(globalThis));
-                        return JSC.JSValue.jsUndefined();
-                   }
-               else if (comptime Environment.isMac)
-                   cpusImplDarwin(globalThis) catch {
-                        const err = JSC.SystemError{
-                            .message = JSC.ZigString.init("Failed to get cpu information"),
-                            .code = JSC.ZigString.init(@as(string, @tagName(JSC.Node.ErrorCode.ERR_SYSTEM_ERROR))),
-                        };
+                globalThis.vm().throwError(globalThis, err.toErrorInstance(globalThis));
+                return JSC.JSValue.jsUndefined();
+            }
+        else if (comptime Environment.isMac)
+            cpusImplDarwin(globalThis) catch {
+                const err = JSC.SystemError{
+                    .message = JSC.ZigString.init("Failed to get cpu information"),
+                    .code = JSC.ZigString.init(@as(string, @tagName(JSC.Node.ErrorCode.ERR_SYSTEM_ERROR))),
+                };
 
-                        globalThis.vm().throwError(globalThis, err.toErrorInstance(globalThis));
-                        return JSC.JSValue.jsUndefined();
-                   }
-               else
-                   JSC.JSValue.createEmptyArray(globalThis, 0);
+                globalThis.vm().throwError(globalThis, err.toErrorInstance(globalThis));
+                return JSC.JSValue.jsUndefined();
+            }
+        else
+            JSC.JSValue.createEmptyArray(globalThis, 0);
     }
 
     fn cpusImplLinux(globalThis: *JSC.JSGlobalObject) !JSC.JSValue {
@@ -107,7 +106,7 @@ pub const Os = struct {
         var num_cpus: u32 = 0;
 
         // Use a large line buffer because the /proc/stat file can have a very long list of interrupts
-        var line_buffer: [1024*8]u8 = undefined;
+        var line_buffer: [1024 * 8]u8 = undefined;
 
         // Read /proc/stat to get number of CPUs and times
         if (std.fs.openFileAbsolute("/proc/stat", .{})) |file| {
@@ -131,10 +130,10 @@ pub const Os = struct {
                 var times = CPUTimes{};
                 times.user = scale * try std.fmt.parseInt(u64, toks.next() orelse return error.eol, 10);
                 times.nice = scale * try std.fmt.parseInt(u64, toks.next() orelse return error.eol, 10);
-                times.sys  = scale * try std.fmt.parseInt(u64, toks.next() orelse return error.eol, 10);
+                times.sys = scale * try std.fmt.parseInt(u64, toks.next() orelse return error.eol, 10);
                 times.idle = scale * try std.fmt.parseInt(u64, toks.next() orelse return error.eol, 10);
                 _ = try (toks.next() orelse error.eol); // skip iowait
-                times.irq  = scale * try std.fmt.parseInt(u64, toks.next() orelse return error.eol, 10);
+                times.irq = scale * try std.fmt.parseInt(u64, toks.next() orelse return error.eol, 10);
 
                 // Actually create the JS object representing the CPU
                 const cpu = JSC.JSValue.createEmptyObject(globalThis, 3);
@@ -161,13 +160,11 @@ pub const Os = struct {
                     const digits = std.mem.trim(u8, line[key_processor.len..], " \t\n");
                     cpu_index = try std.fmt.parseInt(u32, digits, 10);
                     if (cpu_index >= num_cpus) return error.too_may_cpus;
-
                 } else if (std.mem.startsWith(u8, line, key_model_name)) {
                     // If this is the model name, extract it and store on the current cpu
                     const model_name = line[key_model_name.len..];
                     const cpu = JSC.JSObject.getIndex(values, globalThis, cpu_index);
-                    cpu.put(globalThis, JSC.ZigString.static("model"),
-                                        JSC.ZigString.init(model_name).withEncoding().toValueGC(globalThis));
+                    cpu.put(globalThis, JSC.ZigString.static("model"), JSC.ZigString.init(model_name).withEncoding().toValueGC(globalThis));
                 }
                 //TODO: special handling for ARM64 (no model name)?
             }
@@ -175,8 +172,7 @@ pub const Os = struct {
             // Initialize model name to "unknown"
             var it = values.arrayIterator(globalThis);
             while (it.next()) |cpu| {
-                cpu.put(globalThis, JSC.ZigString.static("model"),
-                                    JSC.ZigString.static("unknown").withEncoding().toValue(globalThis));
+                cpu.put(globalThis, JSC.ZigString.static("model"), JSC.ZigString.static("unknown").withEncoding().toValue(globalThis));
             }
         }
 
@@ -212,11 +208,7 @@ pub const Os = struct {
         var num_cpus: c.natural_t = 0;
         var info: [*]local_bindings.processor_cpu_load_info = undefined;
         var info_size: std.c.mach_msg_type_number_t = 0;
-        if (local_bindings.host_processor_info(
-                std.c.mach_host_self(),
-                local_bindings.PROCESSOR_CPU_LOAD_INFO,
-                &num_cpus, @ptrCast(*local_bindings.processor_info_array_t, &info),
-                &info_size) != .SUCCESS) {
+        if (local_bindings.host_processor_info(std.c.mach_host_self(), local_bindings.PROCESSOR_CPU_LOAD_INFO, &num_cpus, @ptrCast(*local_bindings.processor_info_array_t, &info), &info_size) != .SUCCESS) {
             return error.no_processor_info;
         }
         defer _ = std.c.vm_deallocate(std.c.mach_task_self(), @ptrToInt(info), info_size);
@@ -226,20 +218,19 @@ pub const Os = struct {
             return error.broken_process_info;
         }
 
-
         // Get CPU model name
         var model_name_buf: [512]u8 = undefined;
         var len: usize = model_name_buf.len;
         // Try brand_string first and if it fails try hw.model
         if (!(std.c.sysctlbyname("machdep.cpu.brand_string", &model_name_buf, &len, null, 0) == 0 or
-              std.c.sysctlbyname("hw.model", &model_name_buf, &len, null, 0) == 0)) {
+            std.c.sysctlbyname("hw.model", &model_name_buf, &len, null, 0) == 0))
+        {
             return error.no_processor_info;
         }
         //NOTE: sysctlbyname doesn't update len if it was large enough, so we
         // still have to find the null terminator.  All cpus can share the same
         // model name.
         const model_name = JSC.ZigString.init(std.mem.sliceTo(&model_name_buf, 0)).withEncoding().toValueGC(globalThis);
-
 
         // Get CPU speed
         var speed: u64 = 0;
@@ -252,9 +243,10 @@ pub const Os = struct {
             speed = 2_400_000_000;
         }
 
-
         // Get the multiplier; this is the number of ms/tick
-        const unistd = @cImport({@cInclude("unistd.h");});
+        const unistd = @cImport({
+            @cInclude("unistd.h");
+        });
         const ticks: i64 = unistd.sysconf(unistd._SC_CLK_TCK);
         const multiplier = 1000 / @intCast(u64, ticks);
 
@@ -265,9 +257,9 @@ pub const Os = struct {
             const times = CPUTimes{
                 .user = info[cpu_index].cpu_ticks[0] * multiplier,
                 .nice = info[cpu_index].cpu_ticks[3] * multiplier,
-                .sys  = info[cpu_index].cpu_ticks[1] * multiplier,
+                .sys = info[cpu_index].cpu_ticks[1] * multiplier,
                 .idle = info[cpu_index].cpu_ticks[2] * multiplier,
-                .irq  = 0,  // not available
+                .irq = 0, // not available
             };
 
             const cpu = JSC.JSValue.createEmptyObject(globalThis, 3);
@@ -381,8 +373,176 @@ pub const Os = struct {
     pub fn networkInterfaces(globalThis: *JSC.JSGlobalObject, _: *JSC.CallFrame) callconv(.C) JSC.JSValue {
         JSC.markBinding(@src());
 
-        // TODO:
-        return JSC.JSValue.createEmptyObject(globalThis, 0);
+        // getifaddrs sets a pointer to a linked list
+        var interface_start: ?*C.ifaddrs = null;
+        const rc = C.getifaddrs(&interface_start);
+        if (rc != 0) {
+            const err = JSC.SystemError{
+                .message = JSC.ZigString.init("A system error occurred: getifaddrs returned an error"),
+                .code = JSC.ZigString.init(@as(string, @tagName(JSC.Node.ErrorCode.ERR_SYSTEM_ERROR))),
+                .errno = @enumToInt(std.os.errno(rc)),
+                .syscall = JSC.ZigString.init("getifaddrs"),
+            };
+
+            globalThis.vm().throwError(globalThis, err.toErrorInstance(globalThis));
+            return JSC.JSValue.jsUndefined();
+        }
+        defer C.freeifaddrs(interface_start);
+
+        const helpers = struct {
+            // We'll skip interfaces that aren't actually available
+            pub fn skip(iface: *C.ifaddrs) bool {
+                // Skip interfaces that aren't actually available
+                if (iface.ifa_flags & C.IFF_RUNNING == 0) return true;
+                if (iface.ifa_flags & C.IFF_UP == 0) return true;
+                if (iface.ifa_addr == null) return true;
+
+                return false;
+            }
+
+            // We won't actually return link-layer interfaces but we need them for
+            //  extracting the MAC address
+            pub fn isLinkLayer(iface: *C.ifaddrs) bool {
+                if (iface.ifa_addr == null) return false;
+                return if (comptime Environment.isLinux)
+                    return iface.ifa_addr.*.sa_family == std.os.AF.PACKET
+                else if (comptime Environment.isMac)
+                    return iface.ifa_addr.?.*.family == std.os.AF.LINK
+                else
+                    unreachable;
+            }
+
+            pub fn isLoopback(iface: *C.ifaddrs) bool {
+                return iface.ifa_flags & C.IFF_LOOPBACK == C.IFF_LOOPBACK;
+            }
+        };
+
+        // The list currently contains entries for link-layer interfaces
+        //  and the IPv4, IPv6 interfaces.  We only want to return the latter two
+        //  but need the link-layer entries to determine MAC address.
+        // So, on our first pass through the linked list we'll count the number of
+        //  INET interfaces only.
+        var num_inet_interfaces: usize = 0;
+        var it = interface_start;
+        while (it) |iface| : (it = iface.ifa_next) {
+            if (helpers.skip(iface) or helpers.isLinkLayer(iface)) continue;
+            num_inet_interfaces += 1;
+        }
+
+        var ret = JSC.JSValue.createEmptyObject(globalThis, 8);
+
+        // Second pass through, populate each interface object
+        it = interface_start;
+        while (it) |iface| : (it = iface.ifa_next) {
+            if (helpers.skip(iface) or helpers.isLinkLayer(iface)) continue;
+
+            const interface_name = std.mem.sliceTo(iface.ifa_name, 0);
+            const addr = std.net.Address.initPosix(@alignCast(4, @ptrCast(*std.os.sockaddr, iface.ifa_addr)));
+            const netmask = std.net.Address.initPosix(@alignCast(4, @ptrCast(*std.os.sockaddr, iface.ifa_netmask)));
+
+            var interface = JSC.JSValue.createEmptyObject(globalThis, 7);
+
+            // address <string> The assigned IPv4 or IPv6 address
+            // cidr <string> The assigned IPv4 or IPv6 address with the routing prefix in CIDR notation. If the netmask is invalid, this property is set to null.
+            {
+                // Compute the CIDR suffix; returns null if the netmask cannot
+                //  be converted to a CIDR suffix
+                const maybe_suffix: ?u8 = switch (addr.any.family) {
+                    std.os.AF.INET => netmaskToCIDRSuffix(netmask.in.sa.addr),
+                    std.os.AF.INET6 => netmaskToCIDRSuffix(@bitCast(u128, netmask.in6.sa.addr)),
+                    else => null,
+                };
+
+                // Format the address and then, if valid, the CIDR suffix; both
+                //  the address and cidr values can be slices into this same buffer
+                // e.g. addr_str = "192.168.88.254", cidr_str = "192.168.88.254/24"
+                var buf: [64]u8 = undefined;
+                const addr_str = bun.fmt.formatIp(addr, &buf) catch unreachable;
+                var cidr = JSC.JSValue.null;
+                if (maybe_suffix) |suffix| {
+                    //NOTE addr_str might not start at buf[0] due to slicing in formatIp
+                    const start = @ptrToInt(addr_str.ptr) - @ptrToInt(&buf[0]);
+                    // Start writing the suffix immediately after the address
+                    const suffix_str = std.fmt.bufPrint(buf[start + addr_str.len ..], "/{}", .{suffix}) catch unreachable;
+                    // The full cidr value is the address + the suffix
+                    const cidr_str = buf[start .. start + addr_str.len + suffix_str.len];
+                    cidr = JSC.ZigString.init(cidr_str).withEncoding().toValueGC(globalThis);
+                }
+
+                interface.put(globalThis, JSC.ZigString.static("address"), JSC.ZigString.init(addr_str).withEncoding().toValueGC(globalThis));
+                interface.put(globalThis, JSC.ZigString.static("cidr"), cidr);
+            }
+
+            // netmask <string> The IPv4 or IPv6 network mask
+            {
+                var buf: [64]u8 = undefined;
+                const str = bun.fmt.formatIp(netmask, &buf) catch unreachable;
+                interface.put(globalThis, JSC.ZigString.static("netmask"), JSC.ZigString.init(str).withEncoding().toValueGC(globalThis));
+            }
+
+            // family <string> Either IPv4 or IPv6
+            interface.put(globalThis, JSC.ZigString.static("family"), (switch (addr.any.family) {
+                std.os.AF.INET => JSC.ZigString.static("IPv4"),
+                std.os.AF.INET6 => JSC.ZigString.static("IPv6"),
+                else => JSC.ZigString.static("unknown"),
+            }).toValue(globalThis));
+
+            // mac <string> The MAC address of the network interface
+            {
+                // We need to search for the link-layer interface whose name matches this one
+                var ll_it = interface_start;
+                const maybe_ll_addr = while (ll_it) |ll_iface| : (ll_it = ll_iface.ifa_next) {
+                    if (helpers.skip(ll_iface) or !helpers.isLinkLayer(ll_iface)) continue;
+
+                    const ll_name = bun.sliceTo(ll_iface.ifa_name, 0);
+                    if (!strings.hasPrefix(ll_name, interface_name)) continue;
+                    if (ll_name.len > interface_name.len and ll_name[interface_name.len] != ':') continue;
+
+                    // This is the correct link-layer interface entry for the current interface,
+                    //  cast to a link-layer socket address
+                    if (comptime Environment.isLinux) {
+                        break @ptrCast(?*std.os.sockaddr.ll, @alignCast(4, ll_iface.ifa_addr));
+                    } else if (comptime Environment.isMac) {
+                        break @ptrCast(?*C.sockaddr_dl, @alignCast(2, ll_iface.ifa_addr));
+                    } else unreachable;
+                } else null;
+
+                if (maybe_ll_addr) |ll_addr| {
+                    // Encode its link-layer address.  We need 2*6 bytes for the
+                    //  hex characters and 5 for the colon separators
+                    var mac_buf: [17]u8 = undefined;
+                    var addr_data = if (comptime Environment.isLinux) ll_addr.addr else if (comptime Environment.isMac) ll_addr.sdl_data[ll_addr.sdl_nlen..] else unreachable;
+                    const mac = std.fmt.bufPrint(&mac_buf, "{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}", .{
+                        addr_data[0], addr_data[1], addr_data[2],
+                        addr_data[3], addr_data[4], addr_data[5],
+                    }) catch unreachable;
+                    interface.put(globalThis, JSC.ZigString.static("mac"), JSC.ZigString.init(mac).withEncoding().toValueGC(globalThis));
+                }
+            }
+
+            // internal <boolean> true if the network interface is a loopback or similar interface that is not remotely accessible; otherwise false
+            interface.put(globalThis, JSC.ZigString.static("internal"), JSC.JSValue.jsBoolean(helpers.isLoopback(iface)));
+
+            // scopeid <number> The numeric IPv6 scope ID (only specified when family is IPv6)
+            if (addr.any.family == std.os.AF.INET6) {
+                interface.put(globalThis, JSC.ZigString.static("scope_id"), JSC.JSValue.jsNumber(addr.in6.sa.scope_id));
+            }
+
+            // Does this entry already exist?
+            if (ret.get(globalThis, interface_name)) |array| {
+                // Add this interface entry to the existing array
+                const next_index = @intCast(u32, array.getLengthOfArray(globalThis));
+                array.putIndex(globalThis, next_index, interface);
+            } else {
+                // Add it as an array with this interface as an element
+                const member_name = JSC.ZigString.init(interface_name);
+                var array = JSC.JSValue.createEmptyArray(globalThis, 1);
+                array.putIndex(globalThis, 0, interface);
+                ret.put(globalThis, &member_name, array);
+            }
+        }
+
+        return ret;
     }
 
     pub fn platform(globalThis: *JSC.JSGlobalObject, _: *JSC.CallFrame) callconv(.C) JSC.JSValue {
@@ -473,7 +633,8 @@ pub const Os = struct {
                     break :brk systemdir_ ++ "\\temp";
                 }
             } else {
-                break :brk bun.asByteSlice(bun.getenvZ("TMPDIR") orelse bun.getenvZ("TMP") orelse bun.getenvZ("TEMP") orelse "/tmp");
+                const dir = bun.asByteSlice(bun.getenvZ("TMPDIR") orelse bun.getenvZ("TMP") orelse bun.getenvZ("TEMP") orelse "/tmp");
+                break :brk strings.withoutTrailingSlash(dir);
             }
 
             break :brk "unknown";
@@ -561,3 +722,59 @@ pub const Os = struct {
         return JSC.ZigString.static(comptime getMachineName()).toValue(globalThis);
     }
 };
+
+/// Given a netmask returns a CIDR suffix.  Returns null if the mask is not valid.
+/// `@TypeOf(mask)` must be one of u32 (IPv4) or u128 (IPv6)
+fn netmaskToCIDRSuffix(mask: anytype) ?u8 {
+    const T = @TypeOf(mask);
+    comptime std.debug.assert(T == u32 or T == u128);
+
+    const mask_bits = @byteSwap(mask);
+
+    // Validity check: set bits should be left-contiguous
+    const first_zero = @clz(~mask_bits);
+    const last_one = @bitSizeOf(T) - @ctz(mask_bits);
+    if (first_zero < @bitSizeOf(T) and first_zero < last_one) return null;
+    return first_zero;
+}
+test "netmaskToCIDRSuffix" {
+    const ipv4_tests = .{
+        .{ "255.255.255.255", 32 },
+        .{ "255.255.255.254", 31 },
+        .{ "255.255.255.252", 30 },
+        .{ "255.255.255.128", 25 },
+        .{ "255.255.255.0", 24 },
+        .{ "255.255.128.0", 17 },
+        .{ "255.255.0.0", 16 },
+        .{ "255.128.0.0", 9 },
+        .{ "255.0.0.0", 8 },
+        .{ "224.0.0.0", 3 },
+        .{ "192.0.0.0", 2 },
+        .{ "128.0.0.0", 1 },
+        .{ "0.0.0.0", 0 },
+
+        // invalid masks
+        .{ "255.0.0.255", null },
+        .{ "128.0.0.255", null },
+        .{ "128.0.0.1", null },
+    };
+    inline for (ipv4_tests) |t| {
+        const addr = try std.net.Address.parseIp4(t[0], 0);
+        try std.testing.expectEqual(@as(?u8, t[1]), netmaskToCIDRSuffix(addr.in.sa.addr));
+    }
+
+    const ipv6_tests = .{
+        .{ "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", 128 },
+        .{ "ffff:ffff:ffff:ffff::", 64 },
+        .{ "::", 0 },
+
+        // invalid masks
+        .{ "ff00:1::", null },
+        .{ "0:1::", null },
+    };
+    inline for (ipv6_tests) |t| {
+        const addr = try std.net.Address.parseIp6(t[0], 0);
+        const bits = @bitCast(u128, addr.in6.sa.addr);
+        try std.testing.expectEqual(@as(?u8, t[1]), netmaskToCIDRSuffix(bits));
+    }
+}

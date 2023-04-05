@@ -286,6 +286,7 @@ SRC_SQLITE_FILES := $(wildcard $(SRC_DIR)/sqlite/*.cpp)
 SRC_NODE_OS_FILES := $(wildcard $(SRC_DIR)/node_os/*.cpp)
 SRC_IO_FILES := $(wildcard src/io/*.cpp)
 SRC_BUILTINS_FILES := $(wildcard  src/bun.js/builtins/*.cpp)
+SRC_WEBCRYPTO_FILES := $(wildcard $(SRC_DIR)/webcrypto/*.cpp)
 
 OBJ_FILES := $(patsubst $(SRC_DIR)/%.cpp,$(OBJ_DIR)/%.o,$(SRC_FILES))
 WEBCORE_OBJ_FILES := $(patsubst $(SRC_DIR)/webcore/%.cpp,$(OBJ_DIR)/%.o,$(SRC_WEBCORE_FILES))
@@ -294,6 +295,7 @@ NODE_OS_OBJ_FILES := $(patsubst $(SRC_DIR)/node_os/%.cpp,$(OBJ_DIR)/%.o,$(SRC_NO
 BUILTINS_OBJ_FILES := $(patsubst src/bun.js/builtins/%.cpp,$(OBJ_DIR)/%.o,$(SRC_BUILTINS_FILES))
 IO_FILES := $(patsubst src/io/%.cpp,$(OBJ_DIR)/%.o,$(SRC_IO_FILES))
 MODULES_OBJ_FILES := $(patsubst $(MODULES_DIR)/%.cpp,$(OBJ_DIR)/%.o,$(MODULES_FILES))
+WEBCRYPTO_OBJ_FILES := $(patsubst $(SRC_DIR)/webcrypto/%.cpp,$(OBJ_DIR)/%.o,$(SRC_WEBCRYPTO_FILES))
 
 DEBUG_OBJ_FILES := $(patsubst $(SRC_DIR)/%.cpp,$(DEBUG_OBJ_DIR)/%.o,$(SRC_FILES))
 DEBUG_WEBCORE_OBJ_FILES := $(patsubst $(SRC_DIR)/webcore/%.cpp,$(DEBUG_OBJ_DIR)/%.o,$(SRC_WEBCORE_FILES))
@@ -302,9 +304,13 @@ DEBUG_NODE_OS_OBJ_FILES := $(patsubst $(SRC_DIR)/node_os/%.cpp,$(DEBUG_OBJ_DIR)/
 DEBUG_BUILTINS_OBJ_FILES := $(patsubst src/bun.js/builtins/%.cpp,$(DEBUG_OBJ_DIR)/%.o,$(SRC_BUILTINS_FILES))
 DEBUG_IO_FILES := $(patsubst src/io/%.cpp,$(DEBUG_OBJ_DIR)/%.o,$(SRC_IO_FILES))
 DEBUG_MODULES_OBJ_FILES := $(patsubst $(MODULES_DIR)/%.cpp,$(DEBUG_OBJ_DIR)/%.o,$(MODULES_FILES))
+DEBUG_WEBCRYPTO_OBJ_FILES := $(patsubst $(SRC_DIR)/webcrypto/%.cpp, $(DEBUG_OBJ_DIR)/%.o, $(SRC_WEBCRYPTO_FILES))
 
-BINDINGS_OBJ := $(OBJ_FILES) $(WEBCORE_OBJ_FILES) $(SQLITE_OBJ_FILES) $(NODE_OS_OBJ_FILES) $(BUILTINS_OBJ_FILES) $(IO_FILES) $(MODULES_OBJ_FILES)
-DEBUG_BINDINGS_OBJ := $(DEBUG_OBJ_FILES) $(DEBUG_WEBCORE_OBJ_FILES) $(DEBUG_SQLITE_OBJ_FILES) $(DEBUG_NODE_OS_OBJ_FILES) $(DEBUG_BUILTINS_OBJ_FILES) $(DEBUG_IO_FILES) $(DEBUG_MODULES_OBJ_FILES)
+BINDINGS_OBJ := $(OBJ_FILES) $(WEBCORE_OBJ_FILES) $(SQLITE_OBJ_FILES) $(NODE_OS_OBJ_FILES) $(BUILTINS_OBJ_FILES) $(IO_FILES) $(MODULES_OBJ_FILES) $(WEBCRYPTO_OBJ_FILES)
+DEBUG_BINDINGS_OBJ := $(DEBUG_OBJ_FILES) $(DEBUG_WEBCORE_OBJ_FILES) $(DEBUG_SQLITE_OBJ_FILES) $(DEBUG_NODE_OS_OBJ_FILES) $(DEBUG_BUILTINS_OBJ_FILES) $(DEBUG_IO_FILES) $(DEBUG_MODULES_OBJ_FILES) $(DEBUG_WEBCRYPTO_OBJ_FILES)
+
+-include $(BINDINGS_OBJ:.o=.d)
+-include $(DEBUG_BINDINGS_OBJ:.o=.d)
 
 ALL_JSC_INCLUDE_DIRS := -I$(WEBKIT_RELEASE_DIR)/WTF/Headers \
 		-I$(WEBKIT_RELEASE_DIR)/ICU/Headers \
@@ -499,9 +505,9 @@ BUN_LLD_FLAGS_WITHOUT_JSC = $(ARCHIVE_FILES) \
 
 
 
-BUN_LLD_FLAGS = $(BUN_LLD_FLAGS_WITHOUT_JSC) $(WRAP_SYMBOLS_ON_LINUX) $(JSC_FILES) $(BINDINGS_OBJ) -lwebcrypto
-BUN_LLD_FLAGS_DEBUG = $(BUN_LLD_FLAGS_WITHOUT_JSC) $(WRAP_SYMBOLS_ON_LINUX) $(JSC_FILES_DEBUG) $(DEBUG_BINDINGS_OBJ) -lwebcrypto-debug
-BUN_LLD_FLAGS_FAST = $(BUN_LLD_FLAGS_WITHOUT_JSC) $(WRAP_SYMBOLS_ON_LINUX)  $(JSC_FILES_DEBUG) $(BINDINGS_OBJ) -lwebcrypto-debug
+BUN_LLD_FLAGS = $(BUN_LLD_FLAGS_WITHOUT_JSC) $(WRAP_SYMBOLS_ON_LINUX) $(JSC_FILES) $(BINDINGS_OBJ)
+BUN_LLD_FLAGS_DEBUG = $(BUN_LLD_FLAGS_WITHOUT_JSC) $(WRAP_SYMBOLS_ON_LINUX) $(JSC_FILES_DEBUG) $(DEBUG_BINDINGS_OBJ)
+BUN_LLD_FLAGS_FAST = $(BUN_LLD_FLAGS_WITHOUT_JSC) $(WRAP_SYMBOLS_ON_LINUX)  $(JSC_FILES_DEBUG) $(BINDINGS_OBJ)
 
 CLANG_VERSION = $(shell $(CC) --version | awk '/version/ {for(i=1; i<=NF; i++){if($$i=="version"){split($$(i+1),v,".");print v[1]}}}')
 
@@ -569,7 +575,11 @@ c-ares:
 	rm -rf $(BUN_DEPS_DIR)/c-ares/build && \
 	mkdir $(BUN_DEPS_DIR)/c-ares/build && \
 	cd $(BUN_DEPS_DIR)/c-ares/build && \
-    cmake $(CMAKE_FLAGS) -DCMAKE_C_FLAGS="$(CFLAGS) -flto=full" -DCMAKE_BUILD_TYPE=Release -DCARES_STATIC=ON -DCARES_STATIC_PIC=ON -DCARES_SHARED=OFF -G "Ninja" .. && \
+    cmake $(CMAKE_FLAGS) -DCMAKE_C_FLAGS="$(CFLAGS) -flto=full" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_LIBDIR=lib \
+        -DCARES_STATIC=ON -DCARES_STATIC_PIC=ON -DCARES_SHARED=OFF \
+        -G "Ninja" .. && \
 	ninja && cp lib/libcares.a $(BUN_DEPS_OUT_DIR)/libcares.a
 
 .PHONY: prepare-types
@@ -586,8 +596,7 @@ release-types:
 
 .PHONY: format
 format: ## to format the code
-	-$(PRETTIER) --write 'test/bun.js/*.{js,jsx,ts,tsx}'
-	-$(PRETTIER) --write 'test/bun.js/solid-dom-fixtures/**/*.{js,jsx,ts,tsx}'
+	-$(PRETTIER) --write 'test/**/*.{js,jsx,ts,tsx}'
 
 
 .PHONY: lolhtml
@@ -615,7 +624,7 @@ boringssl-debug: boringssl-build-debug boringssl-copy
 
 .PHONY: compile-ffi-test
 compile-ffi-test:
-	clang $(OPTIMIZATION_LEVEL) -shared -undefined dynamic_lookup -o /tmp/bun-ffi-test.dylib -fPIC ./test/bun.js/ffi-test.c
+	clang $(OPTIMIZATION_LEVEL) -shared -undefined dynamic_lookup -o /tmp/bun-ffi-test.dylib -fPIC ./test/js/bun/ffi/ffi-test.c
 
 sqlite:
 
@@ -673,7 +682,7 @@ build-obj:
 
 .PHONY: dev-build-obj-wasm
 dev-build-obj-wasm:
-	$(ZIG) build bun-wasm -Dtarget=wasm32-freestanding --prominent-compile-errors
+	$(ZIG) build bun-wasm -Dtarget=wasm32-freestanding
 
 .PHONY: dev-wasm
 dev-wasm: dev-build-obj-wasm
@@ -686,7 +695,7 @@ dev-wasm: dev-build-obj-wasm
 
 .PHONY: build-obj-wasm
 build-obj-wasm:
-	$(ZIG) build bun-wasm -Doptimize=ReleaseFast -Dtarget=wasm32-freestanding --prominent-compile-errors
+	$(ZIG) build bun-wasm -Doptimize=ReleaseFast -Dtarget=wasm32-freestanding
 	emcc -sEXPORTED_FUNCTIONS="['_bun_free', '_cycleStart', '_cycleEnd', '_bun_malloc', '_scan', '_transform', '_init']" \
 		-g -s ERROR_ON_UNDEFINED_SYMBOLS=0  -DNDEBUG  \
 		$(BUN_DEPS_DIR)/libmimalloc.a.wasm  \
@@ -696,7 +705,7 @@ build-obj-wasm:
 
 .PHONY: build-obj-wasm-small
 build-obj-wasm-small:
-	$(ZIG) build bun-wasm -Doptimize=ReleaseSmall -Dtarget=wasm32-freestanding --prominent-compile-errors
+	$(ZIG) build bun-wasm -Doptimize=ReleaseSmall -Dtarget=wasm32-freestanding
 	emcc -sEXPORTED_FUNCTIONS="['_bun_free', '_cycleStart', '_cycleEnd', '_bun_malloc', '_scan', '_transform', '_init']" \
 		-g -s ERROR_ON_UNDEFINED_SYMBOLS=0  -DNDEBUG  \
 		$(BUN_DEPS_DIR)/libmimalloc.a.wasm  \
@@ -726,19 +735,19 @@ build-obj-safe:
 	$(ZIG) build obj -Doptimize=ReleaseSafe -Dcpu="$(CPU_TARGET)"
 
 UWS_CC_FLAGS = -pthread  -DLIBUS_USE_OPENSSL=1 -DUWS_HTTPRESPONSE_NO_WRITEMARK=1  -DLIBUS_USE_BORINGSSL=1 -DWITH_BORINGSSL=1 -Wpedantic -Wall -Wextra -Wsign-conversion -Wconversion $(UWS_INCLUDE) -DUWS_WITH_PROXY
-UWS_CXX_FLAGS = $(UWS_CC_FLAGS) -std=$(CXX_VERSION) -fno-exceptions
+UWS_CXX_FLAGS = $(UWS_CC_FLAGS) -std=$(CXX_VERSION) -fno-exceptions -fno-rtti
 UWS_LDFLAGS = -I$(BUN_DEPS_DIR)/boringssl/include -I$(ZLIB_INCLUDE_DIR)
 USOCKETS_DIR = $(BUN_DEPS_DIR)/uws/uSockets/
 USOCKETS_SRC_DIR = $(BUN_DEPS_DIR)/uws/uSockets/src/
 
 usockets:
 	rm -rf $(BUN_DEPS_DIR)/uws/uSockets/*.o $(BUN_DEPS_DIR)/uws/uSockets/**/*.o $(BUN_DEPS_DIR)/uws/uSockets/*.a $(BUN_DEPS_DIR)/uws/uSockets/*.bc
-	cd $(USOCKETS_DIR) && $(CC_WITH_CCACHE) -fno-builtin-malloc -fno-builtin-free -fno-builtin-realloc $(EMIT_LLVM_FOR_RELEASE)  $(MACOS_MIN_FLAG) -fPIC $(CFLAGS) $(UWS_CC_FLAGS) -save-temps -I$(BUN_DEPS_DIR)/uws/uSockets/src $(UWS_LDFLAGS) -g $(DEFAULT_LINKER_FLAGS) $(PLATFORM_LINKER_FLAGS) $(OPTIMIZATION_LEVEL) -g -c $(wildcard $(USOCKETS_SRC_DIR)/*.c) $(wildcard $(USOCKETS_SRC_DIR)/**/*.c)
-	cd $(USOCKETS_DIR) && $(CXX_WITH_CCACHE) -fno-builtin-malloc -fno-builtin-free -fno-builtin-realloc $(EMIT_LLVM_FOR_RELEASE) $(MACOS_MIN_FLAG)  -fPIC $(CXXFLAGS) $(UWS_CXX_FLAGS) -save-temps -I$(BUN_DEPS_DIR)/uws/uSockets/src $(UWS_LDFLAGS) -g $(DEFAULT_LINKER_FLAGS) $(PLATFORM_LINKER_FLAGS) $(OPTIMIZATION_LEVEL) -g -c $(wildcard $(USOCKETS_SRC_DIR)/*.cpp) $(wildcard $(USOCKETS_SRC_DIR)/**/*.cpp)
+	cd $(USOCKETS_DIR) && $(CC_WITH_CCACHE) -fno-builtin-malloc -fno-builtin-free -fno-builtin-realloc $(EMIT_LLVM_FOR_RELEASE)  $(MACOS_MIN_FLAG) -fPIC $(CFLAGS) $(UWS_CC_FLAGS) -save-temps -I$(BUN_DEPS_DIR)/uws/uSockets/src $(UWS_LDFLAGS) -g $(DEFAULT_LINKER_FLAGS) $(PLATFORM_LINKER_FLAGS) $(OPTIMIZATION_LEVEL) -c $(wildcard $(USOCKETS_SRC_DIR)/*.c) $(wildcard $(USOCKETS_SRC_DIR)/**/*.c)
+	cd $(USOCKETS_DIR) && $(CXX_WITH_CCACHE) -fno-builtin-malloc -fno-builtin-free -fno-builtin-realloc $(EMIT_LLVM_FOR_RELEASE) $(MACOS_MIN_FLAG)  -fPIC $(CXXFLAGS) $(UWS_CXX_FLAGS) -save-temps -I$(BUN_DEPS_DIR)/uws/uSockets/src $(UWS_LDFLAGS) -g $(DEFAULT_LINKER_FLAGS) $(PLATFORM_LINKER_FLAGS) $(OPTIMIZATION_LEVEL)  -c $(wildcard $(USOCKETS_SRC_DIR)/*.cpp) $(wildcard $(USOCKETS_SRC_DIR)/**/*.cpp)
 	cd $(USOCKETS_DIR) && $(AR) rcvs $(BUN_DEPS_OUT_DIR)/libusockets.a $(USOCKETS_DIR)/*.{o,bc}
 
 uws: usockets
-	$(CXX_WITH_CCACHE) $(EMIT_LLVM_FOR_RELEASE) -fPIC -I$(BUN_DEPS_DIR)/uws/uSockets/src $(CLANG_FLAGS) $(CFLAGS) $(UWS_CXX_FLAGS) $(UWS_LDFLAGS) $(PLATFORM_LINKER_FLAGS) -c -I$(BUN_DEPS_DIR) $(BUN_DEPS_OUT_DIR)/libusockets.a $(BUN_DEPS_DIR)/libuwsockets.cpp -o $(BUN_DEPS_OUT_DIR)/libuwsockets.o
+	$(CXX_WITH_CCACHE) -O2 $(EMIT_LLVM_FOR_RELEASE) -fPIC -I$(BUN_DEPS_DIR)/uws/uSockets/src $(CLANG_FLAGS) $(CFLAGS) $(UWS_CXX_FLAGS) $(UWS_LDFLAGS) $(PLATFORM_LINKER_FLAGS) -c -I$(BUN_DEPS_DIR) $(BUN_DEPS_OUT_DIR)/libusockets.a $(BUN_DEPS_DIR)/libuwsockets.cpp -o $(BUN_DEPS_OUT_DIR)/libuwsockets.o
 
 .PHONY: sign-macos-x64
 sign-macos-x64:
@@ -788,8 +797,7 @@ fmt: fmt-cpp fmt-zig
 api:
 	./node_modules/.bin/peechy --schema src/api/schema.peechy --esm src/api/schema.js --ts src/api/schema.d.ts --zig src/api/schema.zig
 	$(ZIG) fmt src/api/schema.zig
-	$(PRETTIER) --write src/api/schema.js
-	$(PRETTIER) --write src/api/schema.d.ts
+	$(PRETTIER) --config=.prettierrc.cjs --write src/api/schema.js src/api/schema.d.ts
 
 .PHONY: node-fallbacks
 node-fallbacks:
@@ -832,7 +840,7 @@ fetch: $(IO_FILES)
 .PHONY: sha
 sha:
 	$(ZIG) build -Doptimize=ReleaseFast sha-bench-obj
-	$(CXX) $(PACKAGE_DIR)/sha.o -g $(OPTIMIZATION_LEVEL) -o ./misctools/sha $(DEFAULT_LINKER_FLAGS) -lc $(MINIMUM_ARCHIVE_FILES)
+	$(CXX) $(PACKAGE_DIR)/sha.o -I$(BUN_DEPS_DIR) -g $(OPTIMIZATION_LEVEL) -o ./misctools/sha $(DEFAULT_LINKER_FLAGS) -lc $(MINIMUM_ARCHIVE_FILES)
 	rm -rf $(PACKAGE_DIR)/sha.o
 
 .PHONY: fetch-debug
@@ -897,14 +905,14 @@ jsc: jsc-build jsc-copy-headers jsc-bindings
 .PHONY: jsc-build
 jsc-build: $(JSC_BUILD_STEPS)
 .PHONY: jsc-bindings
-jsc-bindings: headers bindings webcrypto-debug webcrypto
+jsc-bindings: headers bindings
 
 .PHONY: clone-submodules
 clone-submodules:
 	git -c submodule."src/bun.js/WebKit".update=none submodule update --init --recursive --depth=1 --progress
 
 .PHONY: devcontainer
-devcontainer: $(OBJ_DIR) $(DEBUG_OBJ_DIR) clone-submodules mimalloc zlib libarchive boringssl picohttp identifier-cache node-fallbacks npm-install api analytics bun_error fallback_decoder bindings uws lolhtml usockets tinycc c-ares runtime_js_dev sqlite webcrypto-debug webcrypto
+devcontainer: $(OBJ_DIR) $(DEBUG_OBJ_DIR) clone-submodules mimalloc zlib libarchive boringssl picohttp identifier-cache node-fallbacks npm-install api analytics bun_error fallback_decoder bindings uws lolhtml usockets tinycc c-ares runtime_js_dev sqlite
 
 .PHONY: devcontainer-build
 devcontainer-build:
@@ -1080,7 +1088,7 @@ release-bin-dir:
 
 .PHONY: dev-obj
 dev-obj:
-	$(ZIG) build obj --prominent-compile-errors -freference-trace -Dcpu="$(CPU_TARGET)"
+	$(ZIG) build obj -freference-trace -Dcpu="$(CPU_TARGET)"
 
 .PHONY: dev-obj-linux
 dev-obj-linux:
@@ -1092,45 +1100,8 @@ dev: mkdir-dev dev-obj bun-link-lld-debug
 mkdir-dev:
 	mkdir -p $(DEBUG_PACKAGE_DIR)/bin
 
-test-install:
-	cd test/scripts && $(NPM_CLIENT) install
-
-.PHONY: test-bun-dev
-test-bun-dev:
-	BUN_BIN=$(RELEASE_BUN) bash test/apps/bun-dev.sh
-	BUN_BIN=$(RELEASE_BUN) bash test/apps/bun-dev-index-html.sh
-
-.PHONY: test-dev-bun-dev
-test-dev-bun-dev:
-	BUN_BIN=$(DEBUG_BUN) bash test/apps/bun-dev.sh
-	BUN_BIN=$(DEBUG_BUN) bash test/apps/bun-dev-index-html.sh
-
-.PHONY: test-bun-snapshot
-test-bun-snapshot:
-	rm -rf test/bun.js/snapshots.js
-	touch test/bun.js/snapshots.js
-	$(foreach i,$(wildcard test/bun.js/*.snapshot.*),echo "" >> test/bun.js/snapshots.js; echo "// $i" >> test/bun.js/snapshots.js; $(RELEASE_BUN) build $i --platform=bun >> test/bun.js/snapshots.js;)
-
-.PHONY: test-dev-bun-snapshot
-test-dev-bun-snapshot:
-	rm -rf test/bun.js/snapshots.debug.js
-	touch test/bun.js/snapshots.debug.js
-	$(foreach i,$(wildcard test/bun.js/*.snapshot.*),echo "" >> test/bun.js/snapshots.debug.js; echo "// $i" >> test/bun.js/snapshots.debug.js; $(DEBUG_BUN) build $i --platform=bun >> test/bun.js/snapshots.debug.js;)
-
-.PHONY: test-bun-init
-test-bun-init:
-	BUN_BIN=$(RELEASE_BUN) bash test/apps/bun-init-check.sh
-
-.PHONY: test-dev-bun-init
-test-dev-bun-init:
-	BUN_BIN=$(DEBUG_BUN) bash test/apps/bun-init-check.sh
-
-.PHONY: test-bun-wiptest
-test-bun-wiptest: test/wiptest/run
-	cd test/wiptest && BUN_BIN=$(DEBUG_BUN) ./run ./fixtures
-
-.PHONY: test-all
-test-all: test-install test-bun-snapshot test-with-hmr test-no-hmr test-create-next test-create-react test-bun-run test-bun-install test-bun-dev test-bun-init
+test-all:
+	$(RELEASE_BUN) test
 
 .PHONY: copy-test-node-modules
 copy-test-node-modules:
@@ -1140,73 +1111,6 @@ copy-test-node-modules:
 .PHONY: kill-bun
 kill-bun:
 	-killall -9 bun bun-debug
-
-.PHONY: test-dev-create-next
-test-dev-create-next:
-	BUN_BIN=$(DEBUG_BUN) bash test/apps/bun-create-next.sh
-
-.PHONY: test-dev-create-react
-test-dev-create-react:
-	BUN_BIN=$(DEBUG_BUN) bash test/apps/bun-create-react.sh
-
-.PHONY: test-create-next
-test-create-next:
-	BUN_BIN=$(RELEASE_BUN) bash test/apps/bun-create-next.sh
-
-.PHONY: test-bun-run
-test-bun-run:
-	cd test/apps && BUN_BIN=$(RELEASE_BUN) bash ./bun-run-check.sh
-
-.PHONY: test-bun-install
-test-bun-install: test-bun-install-git-status
-	cd test/apps && JS_RUNTIME=$(RELEASE_BUN) NPM_CLIENT=$(RELEASE_BUN) bash ./bun-install.sh
-	cd test/apps && BUN_BIN=$(RELEASE_BUN) bash ./bun-install-utf8.sh
-
-.PHONY: test-bun-install-git-status
-test-bun-install-git-status:
-	cd test/apps && JS_RUNTIME=$(RELEASE_BUN) BUN_BIN=$(RELEASE_BUN) bash ./bun-install-lockfile-status.sh
-
-.PHONY: test-dev-bun-install
-test-dev-bun-install: test-dev-bun-install-git-status
-	cd test/apps && JS_RUNTIME=$(DEBUG_BUN) NPM_CLIENT=$(DEBUG_BUN) bash ./bun-install.sh
-	cd test/apps && BUN_BIN=$(DEBUG_BUN) bash ./bun-install-utf8.sh
-
-.PHONY: test-dev-bun-install-git-status
-test-dev-bun-install-git-status:
-	cd test/apps && BUN_BIN=$(DEBUG_BUN) bash ./bun-install-lockfile-status.sh
-
-.PHONY: test-create-react
-test-create-react:
-	BUN_BIN=$(RELEASE_BUN) bash test/apps/bun-create-react.sh
-
-.PHONY: test-with-hmr
-test-with-hmr: kill-bun copy-test-node-modules
-	BUN_BIN=$(RELEASE_BUN) node test/scripts/browser.js
-
-.PHONY: test-no-hmr
-test-no-hmr: kill-bun copy-test-node-modules
-	-killall bun -9;
-	DISABLE_HMR="DISABLE_HMR" BUN_BIN=$(RELEASE_BUN) node test/scripts/browser.js
-
-.PHONY: test-dev-with-hmr
-test-dev-with-hmr: copy-test-node-modules
-	-killall bun-debug -9;
-	BUN_BIN=$(DEBUG_BUN) node test/scripts/browser.js
-
-.PHONY: test-dev-no-hmr
-test-dev-no-hmr: copy-test-node-modules
-	-killall bun-debug -9;
-	DISABLE_HMR="DISABLE_HMR" BUN_BIN=$(DEBUG_BUN) node test/scripts/browser.js
-
-.PHONY: test-dev-bun-hmr
-test-dev-bun-run:
-	cd test/apps && BUN_BIN=$(DEBUG_BUN) bash bun-run-check.sh
-
-.PHONY: test-dev-all
-test-dev-all: test-install test-dev-bun-snapshot test-dev-with-hmr test-dev-no-hmr test-dev-create-next test-dev-create-react test-dev-bun-run test-dev-bun-install test-dev-bun-dev test-dev-bun-init
-test-dev-bunjs:
-
-test-dev: test-dev-with-hmr
 
 jsc-copy-headers:
 	cp $(WEBKIT_DIR)/Source/JavaScriptCore/heap/WeakHandleOwner.h $(WEBKIT_RELEASE_DIR)/JavaScriptCore/PrivateHeaders/JavaScriptCore/WeakHandleOwner.h
@@ -1377,7 +1281,7 @@ jsc-build-mac-copy:
 clean-jsc:
 	cd src/bun.js/WebKit && rm -rf **/CMakeCache.txt **/CMakeFiles && rm -rf src/bun.js/WebKit/WebKitBuild
 clean-bindings:
-	rm -rf $(OBJ_DIR)/*.o $(DEBUG_OBJ_DIR)/*.o $(DEBUG_OBJ_DIR)/webcore/*.o $(DEBUG_BINDINGS_OBJ) $(OBJ_DIR)/webcore/*.o $(BINDINGS_OBJ)
+	rm -rf $(OBJ_DIR)/*.o $(DEBUG_OBJ_DIR)/*.o $(DEBUG_OBJ_DIR)/webcore/*.o $(DEBUG_BINDINGS_OBJ) $(OBJ_DIR)/webcore/*.o $(BINDINGS_OBJ) $(OBJ_DIR)/*.d $(DEBUG_OBJ_DIR)/*.d
 
 .PHONY: clean
 clean: clean-bindings
@@ -1390,12 +1294,12 @@ clean: clean-bindings
 	(cd $(BUN_DEPS_DIR)/c-ares && rm -rf build && make clean) || echo "";
 
 .PHONY: release-bindings
-release-bindings: $(OBJ_DIR) $(OBJ_FILES) $(WEBCORE_OBJ_FILES) $(SQLITE_OBJ_FILES) $(NODE_OS_OBJ_FILES) $(BUILTINS_OBJ_FILES) $(IO_FILES) $(MODULES_OBJ_FILES)
+release-bindings: $(OBJ_DIR) $(OBJ_FILES) $(WEBCORE_OBJ_FILES) $(SQLITE_OBJ_FILES) $(NODE_OS_OBJ_FILES) $(BUILTINS_OBJ_FILES) $(IO_FILES) $(MODULES_OBJ_FILES) $(WEBCRYPTO_OBJ_FILES)
 
 # Do not add $(DEBUG_DIR) to this list
 # It will break caching, causing you to have to wait for every .cpp file to rebuild.
 .PHONY: bindings
-bindings: $(DEBUG_OBJ_DIR) $(DEBUG_OBJ_FILES) $(DEBUG_WEBCORE_OBJ_FILES) $(DEBUG_SQLITE_OBJ_FILES) $(DEBUG_NODE_OS_OBJ_FILES) $(DEBUG_BUILTINS_OBJ_FILES) $(DEBUG_IO_FILES) $(DEBUG_MODULES_OBJ_FILES)
+bindings: $(DEBUG_OBJ_DIR) $(DEBUG_OBJ_FILES) $(DEBUG_WEBCORE_OBJ_FILES) $(DEBUG_SQLITE_OBJ_FILES) $(DEBUG_NODE_OS_OBJ_FILES) $(DEBUG_BUILTINS_OBJ_FILES) $(DEBUG_IO_FILES) $(DEBUG_MODULES_OBJ_FILES) $(DEBUG_WEBCRYPTO_OBJ_FILES)
 
 .PHONY: jsc-bindings-mac
 jsc-bindings-mac: bindings
@@ -1563,6 +1467,7 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp
 	$(CXX_WITH_CCACHE) $(CLANG_FLAGS) $(UWS_INCLUDE) \
 		$(MACOS_MIN_FLAG) \
 		$(OPTIMIZATION_LEVEL) \
+		-MMD \
 		-fno-exceptions \
 		-fno-rtti \
 		-ferror-limit=1000 \
@@ -1573,6 +1478,7 @@ $(OBJ_DIR)/%.o: src/bun.js/modules/%.cpp
 	$(CXX_WITH_CCACHE) $(CLANG_FLAGS) $(UWS_INCLUDE) \
 		$(MACOS_MIN_FLAG) \
 		$(OPTIMIZATION_LEVEL) \
+		-MMD \
 		-fno-exceptions \
 		-fno-rtti \
 		-ferror-limit=1000 \
@@ -1583,6 +1489,7 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/webcore/%.cpp
 	$(CXX_WITH_CCACHE) $(CLANG_FLAGS) \
 		$(MACOS_MIN_FLAG) \
 		$(OPTIMIZATION_LEVEL) \
+		-MMD \
 		-fno-exceptions \
 		-fno-rtti \
 		-ferror-limit=1000 \
@@ -1593,6 +1500,7 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/sqlite/%.cpp
 	$(CXX_WITH_CCACHE) $(CLANG_FLAGS) \
 		$(MACOS_MIN_FLAG) \
 		$(OPTIMIZATION_LEVEL) \
+		-MMD \
 		-fno-exceptions \
 		-fno-rtti \
 		-ferror-limit=1000 \
@@ -1603,6 +1511,7 @@ $(OBJ_DIR)/%.o: src/io/%.cpp
 	$(CXX_WITH_CCACHE) $(CLANG_FLAGS) \
 		$(MACOS_MIN_FLAG) \
 		$(OPTIMIZATION_LEVEL) \
+		-MMD \
 		-fno-exceptions \
 		-fno-rtti \
 		-ferror-limit=1000 \
@@ -1613,6 +1522,7 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/node_os/%.cpp
 	$(CXX_WITH_CCACHE) $(CLANG_FLAGS) \
 		$(MACOS_MIN_FLAG) \
 		$(OPTIMIZATION_LEVEL) \
+		-MMD \
 		-fno-exceptions \
 		-fno-rtti \
 		-ferror-limit=1000 \
@@ -1623,6 +1533,19 @@ $(OBJ_DIR)/%.o: src/bun.js/builtins/%.cpp
 	$(CXX_WITH_CCACHE) $(CLANG_FLAGS) \
 		$(MACOS_MIN_FLAG) \
 		$(OPTIMIZATION_LEVEL) \
+		-MMD \
+		-fno-exceptions \
+		-fno-rtti \
+		-ferror-limit=1000 \
+		$(EMIT_LLVM) \
+		-c -o $@ $<
+
+
+$(OBJ_DIR)/%.o: src/bun.js/bindings/webcrypto/%.cpp
+	$(CXX_WITH_CCACHE) $(CLANG_FLAGS) \
+		$(MACOS_MIN_FLAG) \
+		$(OPTIMIZATION_LEVEL) \
+		-MMD \
 		-fno-exceptions \
 		-fno-rtti \
 		-ferror-limit=1000 \
@@ -1636,6 +1559,7 @@ $(DEBUG_OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp
 	$(CXX_WITH_CCACHE) $(CLANG_FLAGS) $(UWS_INCLUDE) \
 		$(MACOS_MIN_FLAG) \
 		$(DEBUG_OPTIMIZATION_LEVEL) \
+		-MMD \
 		-fno-exceptions \
 		-fno-rtti \
 		-ferror-limit=1000 \
@@ -1650,6 +1574,7 @@ $(DEBUG_OBJ_DIR)/%.o: $(SRC_DIR)/webcore/%.cpp
 	$(CXX_WITH_CCACHE) $(CLANG_FLAGS) \
 		$(MACOS_MIN_FLAG) \
 		$(DEBUG_OPTIMIZATION_LEVEL) \
+		-MMD \
 		-fno-exceptions \
 		-fno-rtti \
 		-ferror-limit=1000 \
@@ -1662,6 +1587,7 @@ $(DEBUG_OBJ_DIR)/%.o: src/io/%.cpp
 	$(CXX_WITH_CCACHE) $(CLANG_FLAGS) \
 		$(MACOS_MIN_FLAG) \
 		$(DEBUG_OPTIMIZATION_LEVEL) \
+		-MMD \
 		-fno-exceptions \
 		-fno-rtti \
 		-ferror-limit=1000 \
@@ -1677,6 +1603,7 @@ $(DEBUG_OBJ_DIR)/%.o: $(SRC_DIR)/sqlite/%.cpp
 	$(CXX_WITH_CCACHE) $(CLANG_FLAGS) \
 		$(MACOS_MIN_FLAG) \
 		$(DEBUG_OPTIMIZATION_LEVEL) \
+		-MMD \
 		-fno-exceptions \
 		-fno-rtti \
 		-ferror-limit=1000 \
@@ -1691,6 +1618,7 @@ $(DEBUG_OBJ_DIR)/%.o: $(SRC_DIR)/node_os/%.cpp
 	$(CXX_WITH_CCACHE) $(CLANG_FLAGS) \
 		$(MACOS_MIN_FLAG) \
 		$(DEBUG_OPTIMIZATION_LEVEL) \
+		-MMD \
 		-fno-exceptions \
 		-fno-rtti \
 		-ferror-limit=1000 \
@@ -1705,6 +1633,7 @@ $(DEBUG_OBJ_DIR)/%.o: src/bun.js/builtins/%.cpp
 	$(CXX_WITH_CCACHE) $(CLANG_FLAGS) \
 		$(MACOS_MIN_FLAG) \
 		$(DEBUG_OPTIMIZATION_LEVEL) \
+		-MMD \
 		-fno-exceptions \
 		-fno-rtti \
 		-ferror-limit=1000 \
@@ -1717,6 +1646,7 @@ $(DEBUG_OBJ_DIR)/%.o: src/bun.js/modules/%.cpp
 	$(CXX_WITH_CCACHE) $(CLANG_FLAGS) \
 		$(MACOS_MIN_FLAG) \
 		$(DEBUG_OPTIMIZATION_LEVEL) \
+		-MMD \
 		-fno-exceptions \
 		-fno-rtti \
 		-ferror-limit=1000 \
@@ -1725,11 +1655,12 @@ $(DEBUG_OBJ_DIR)/%.o: src/bun.js/modules/%.cpp
 		-g3 -c -o $@ $<
 
 
-
-$(DEBUG_OBJ_DIR)/webcrypto/%.o: src/bun.js/bindings/webcrypto/%.cpp
+.PHONY: src/bun.js/bindings/webcrypto/%.cpp
+$(DEBUG_OBJ_DIR)/%.o: src/bun.js/bindings/webcrypto/%.cpp
 	$(CXX_WITH_CCACHE) $(CLANG_FLAGS) \
 		$(MACOS_MIN_FLAG) \
 		$(DEBUG_OPTIMIZATION_LEVEL) \
+		-MMD \
 		-fno-exceptions \
 		-I$(SRC_DIR) \
 		-fno-rtti \
@@ -1737,43 +1668,6 @@ $(DEBUG_OBJ_DIR)/webcrypto/%.o: src/bun.js/bindings/webcrypto/%.cpp
 		$(EMIT_LLVM_FOR_DEBUG) \
 		-DBUN_DEBUG \
 		-g3 -c -o $@ $<
-
-
-
-
-.PHONY: webcrypto-debug-obj
-# Make all the .cpp files in the webcrypto directory into .o files using Makefile substitutions
-webcrypto-debug-obj: $(patsubst src/bun.js/bindings/webcrypto/%.cpp, $(DEBUG_OBJ_DIR)/webcrypto/%.o, $(wildcard src/bun.js/bindings/webcrypto/*.cpp))
-
-.PHONY: webcrypto-debug
-webcrypto-debug:
-	rm -rf $(DEBUG_OBJ_DIR)/webcrypto $(BUN_DEPS_OUT_DIR)/libwebcrypto-debug.a
-	mkdir -p $(DEBUG_OBJ_DIR)/webcrypto
-	make webcrypto-debug-obj -j$(CPUS)
-	$(AR) rcs $(BUN_DEPS_OUT_DIR)/libwebcrypto-debug.a $(DEBUG_OBJ_DIR)/webcrypto/*.o
-
-
-$(OBJ_DIR)/webcrypto/%.o: src/bun.js/bindings/webcrypto/%.cpp
-	$(CXX_WITH_CCACHE) $(CLANG_FLAGS) \
-		$(MACOS_MIN_FLAG) \
-		$(OPTIMIZATION_LEVEL) \
-		-fno-exceptions \
-		-fno-rtti \
-		-ferror-limit=1000 \
-		$(EMIT_LLVM_FOR_RELEASE) \
-		-g3 -c -o $@ $<
-
-
-.PHONY: webcrypto-obj
-# Make all the .cpp files in the webcrypto directory into .o files using Makefile substitutions
-webcrypto-obj: $(patsubst src/bun.js/bindings/webcrypto/%.cpp, $(OBJ_DIR)/webcrypto/%.o, $(wildcard src/bun.js/bindings/webcrypto/*.cpp))
-
-.PHONY: webcrypto
-webcrypto:
-	rm -rf $(OBJ_DIR)/webcrypto $(BUN_DEPS_OUT_DIR)/libwebcrypto.a
-	mkdir -p $(OBJ_DIR)/webcrypto
-	make webcrypto-obj -j$(CPUS)
-	$(AR) rcs $(BUN_DEPS_OUT_DIR)/libwebcrypto.a $(OBJ_DIR)/webcrypto/*.o
 
 sizegen:
 	mkdir -p $(BUN_TMP_DIR)

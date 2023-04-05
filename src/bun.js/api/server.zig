@@ -377,7 +377,9 @@ pub const ServerConfig = struct {
             }
 
             if (arg.getTruthy(global, "maxRequestBodySize")) |max_request_body_size| {
-                args.max_request_body_size = @intCast(u64, @max(0, max_request_body_size.toInt64()));
+                if (max_request_body_size.isNumber()) {
+                    args.max_request_body_size = @intCast(u64, @max(0, max_request_body_size.toInt64()));
+                }
             }
 
             if (arg.getTruthy(global, "error")) |onError| {
@@ -426,35 +428,64 @@ pub const ServerConfig = struct {
 
             if (args.base_url.protocol.len == 0) {
                 const protocol: string = if (args.ssl_config != null) "https" else "http";
-
-                args.base_uri = (if ((args.port == 80 and args.ssl_config == null) or (args.port == 443 and args.ssl_config != null))
-                    std.fmt.allocPrint(bun.default_allocator, "{s}://{s}/{s}", .{
-                        protocol,
-                        args.base_url.hostname,
-                        strings.trimLeadingChar(args.base_url.pathname, '/'),
-                    })
-                else
-                    std.fmt.allocPrint(bun.default_allocator, "{s}://{s}:{d}/{s}", .{
-                        protocol,
-                        args.base_url.hostname,
-                        args.port,
-                        strings.trimLeadingChar(args.base_url.pathname, '/'),
-                    })) catch unreachable;
+                const hostname = args.base_url.hostname;
+                const needsBrackets: bool = strings.isIPV6Address(hostname) and hostname[0] != '[';
+                if (needsBrackets) {
+                    args.base_uri = (if ((args.port == 80 and args.ssl_config == null) or (args.port == 443 and args.ssl_config != null))
+                        std.fmt.allocPrint(bun.default_allocator, "{s}://[{s}]/{s}", .{
+                            protocol,
+                            hostname,
+                            strings.trimLeadingChar(args.base_url.pathname, '/'),
+                        })
+                    else
+                        std.fmt.allocPrint(bun.default_allocator, "{s}://[{s}]:{d}/{s}", .{
+                            protocol,
+                            hostname,
+                            args.port,
+                            strings.trimLeadingChar(args.base_url.pathname, '/'),
+                        })) catch unreachable;
+                } else {
+                    args.base_uri = (if ((args.port == 80 and args.ssl_config == null) or (args.port == 443 and args.ssl_config != null))
+                        std.fmt.allocPrint(bun.default_allocator, "{s}://{s}/{s}", .{
+                            protocol,
+                            hostname,
+                            strings.trimLeadingChar(args.base_url.pathname, '/'),
+                        })
+                    else
+                        std.fmt.allocPrint(bun.default_allocator, "{s}://{s}:{d}/{s}", .{
+                            protocol,
+                            hostname,
+                            args.port,
+                            strings.trimLeadingChar(args.base_url.pathname, '/'),
+                        })) catch unreachable;
+                }
 
                 args.base_url = URL.parse(args.base_uri);
             }
         } else {
             const hostname: string =
                 if (has_hostname and std.mem.span(args.hostname).len > 0) std.mem.span(args.hostname) else "0.0.0.0";
-            const protocol: string = if (args.ssl_config != null) "https" else "http";
 
-            args.base_uri = (if ((args.port == 80 and args.ssl_config == null) or (args.port == 443 and args.ssl_config != null))
-                std.fmt.allocPrint(bun.default_allocator, "{s}://{s}/", .{
-                    protocol,
-                    hostname,
-                })
-            else
-                std.fmt.allocPrint(bun.default_allocator, "{s}://{s}:{d}/", .{ protocol, hostname, args.port })) catch unreachable;
+            const needsBrackets: bool = strings.isIPV6Address(hostname) and hostname[0] != '[';
+
+            const protocol: string = if (args.ssl_config != null) "https" else "http";
+            if (needsBrackets) {
+                args.base_uri = (if ((args.port == 80 and args.ssl_config == null) or (args.port == 443 and args.ssl_config != null))
+                    std.fmt.allocPrint(bun.default_allocator, "{s}://[{s}]/", .{
+                        protocol,
+                        hostname,
+                    })
+                else
+                    std.fmt.allocPrint(bun.default_allocator, "{s}://[{s}]:{d}/", .{ protocol, hostname, args.port })) catch unreachable;
+            } else {
+                args.base_uri = (if ((args.port == 80 and args.ssl_config == null) or (args.port == 443 and args.ssl_config != null))
+                    std.fmt.allocPrint(bun.default_allocator, "{s}://{s}/", .{
+                        protocol,
+                        hostname,
+                    })
+                else
+                    std.fmt.allocPrint(bun.default_allocator, "{s}://{s}:{d}/", .{ protocol, hostname, args.port })) catch unreachable;
+            }
 
             if (!strings.isAllASCII(hostname)) {
                 JSC.throwInvalidArguments("Unicode hostnames must already be encoded for now.\nnew URL(input).hostname should do the trick.", .{}, global, exception);
@@ -635,6 +666,7 @@ pub fn NewRequestContextStackAllocator(comptime RequestContext: type, comptime c
 fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comptime ThisServer: type) type {
     return struct {
         const RequestContext = @This();
+        const ctxLog = Output.scoped(.RequestContext, false);
         const App = uws.NewApp(ssl_enabled);
         pub threadlocal var pool: ?*RequestContext.RequestContextStackAllocator = null;
         pub threadlocal var pool_allocator: std.mem.Allocator = undefined;
@@ -649,6 +681,7 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
         /// this prevents an extra pthread_getspecific() call which shows up in profiling
         allocator: std.mem.Allocator,
         req: *uws.Request,
+        signal: ?*JSC.WebCore.AbortSignal = null,
         method: HTTP.Method,
         aborted: bool = false,
         finalized: bun.DebugOnly(bool) = bun.DebugOnlyDefault(false),
@@ -659,6 +692,8 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
         pending_promises_for_abort: u8 = 0,
 
         has_marked_complete: bool = false,
+        has_marked_pending: bool = false,
+
         response_jsvalue: JSC.JSValue = JSC.JSValue.zero,
         response_protected: bool = false,
         response_ptr: ?*JSC.WebCore.Response = null,
@@ -697,10 +732,23 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
         }
 
         pub fn onResolve(_: *JSC.JSGlobalObject, callframe: *JSC.CallFrame) callconv(.C) JSValue {
+            ctxLog("onResolve", .{});
+
             const arguments = callframe.arguments(2);
             var ctx = arguments.ptr[1].asPromisePtr(@This());
             const result = arguments.ptr[0];
             result.ensureStillAlive();
+
+            if (ctx.request_js_object != null and ctx.signal == null) {
+                var request_js = ctx.request_js_object.?.value();
+                request_js.ensureStillAlive();
+                if (request_js.as(Request)) |request_object| {
+                    if (request_object.signal) |signal| {
+                        ctx.signal = signal;
+                        _ = signal.ref();
+                    }
+                }
+            }
 
             ctx.pending_promises_for_abort -|= 1;
             if (ctx.aborted) {
@@ -738,14 +786,28 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
         }
 
         pub fn finalizeForAbort(this: *RequestContext) void {
+            streamLog("finalizeForAbort", .{});
             this.pending_promises_for_abort -|= 1;
             if (this.pending_promises_for_abort == 0) this.finalize();
         }
 
         pub fn onReject(_: *JSC.JSGlobalObject, callframe: *JSC.CallFrame) callconv(.C) JSValue {
+            ctxLog("onReject", .{});
+
             const arguments = callframe.arguments(2);
             var ctx = arguments.ptr[1].asPromisePtr(@This());
             const err = arguments.ptr[0];
+
+            if (ctx.request_js_object != null and ctx.signal == null) {
+                var request_js = ctx.request_js_object.?.value();
+                request_js.ensureStillAlive();
+                if (request_js.as(Request)) |request_object| {
+                    if (request_object.signal) |signal| {
+                        ctx.signal = signal;
+                        _ = signal.ref();
+                    }
+                }
+            }
 
             ctx.pending_promises_for_abort -|= 1;
 
@@ -775,7 +837,7 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
                 return;
             }
 
-            if (!ctx.resp.hasResponded()) {
+            if (!ctx.resp.hasResponded() and !ctx.has_marked_pending) {
                 ctx.renderMissing();
                 return;
             }
@@ -870,8 +932,10 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
                 return;
             }
 
+            this.has_marked_pending = true;
             this.response_buf_owned = std.ArrayListUnmanaged(u8){ .items = bb.items, .capacity = bb.capacity };
             this.resp.onWritable(*RequestContext, onWritableCompleteResponseBuffer, this);
+            this.setAbortHandler();
         }
 
         pub fn renderResponseBuffer(this: *RequestContext) void {
@@ -887,11 +951,11 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
                 this.response_buf_owned.items.len,
                 this.shouldCloseConnection(),
             )) {
+                this.has_marked_pending = true;
                 this.resp.onWritable(*RequestContext, onWritableCompleteResponseBuffer, this);
                 this.setAbortHandler();
                 return;
             }
-
             this.finalize();
         }
 
@@ -988,7 +1052,25 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
         pub fn onAbort(this: *RequestContext, resp: *App.Response) void {
             std.debug.assert(this.resp == resp);
             std.debug.assert(!this.aborted);
+            //mark request as aborted
             this.aborted = true;
+
+            // if signal is not aborted, abort the signal
+            if (this.signal) |signal| {
+                this.signal = null;
+                if (!signal.aborted()) {
+                    const reason = JSC.WebCore.AbortSignal.createAbortError(JSC.ZigString.static("The user aborted a request"), &JSC.ZigString.Empty, this.server.globalThis);
+                    reason.ensureStillAlive();
+                    _ = signal.signal(reason);
+                }
+                _ = signal.unref();
+            }
+
+            //if have sink, call onAborted on sink
+            if (this.sink) |wrapper| {
+                wrapper.sink.abort();
+                return;
+            }
 
             // if we can, free the request now.
             if (this.isDeadRequest()) {
@@ -1010,14 +1092,6 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
                     // User called .blob(), .json(), text(), or .arrayBuffer() on the Request object
                     // but we received nothing or the connection was aborted
                     if (request_js.as(Request)) |req| {
-                        if (req.signal) |signal| {
-                            // if signal is not aborted, abort the signal
-                            if (!signal.aborted()) {
-                                const reason = JSC.AbortSignal.createAbortError(JSC.ZigString.static("The user aborted a request"), &JSC.ZigString.Empty, this.server.globalThis);
-                                reason.ensureStillAlive();
-                                _ = signal.signal(reason);
-                            }
-                        }
 
                         // the promise is pending
                         if (req.body == .Locked and (req.body.Locked.action != .none or req.body.Locked.promise != null)) {
@@ -1062,6 +1136,7 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
         // This function may be called multiple times
         // so it's important that we can safely do that
         pub fn finalizeWithoutDeinit(this: *RequestContext) void {
+            ctxLog("finalizeWithoutDeinit", .{});
             this.blob.detach();
 
             if (comptime Environment.allow_assert) {
@@ -1070,6 +1145,7 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
             }
 
             if (!this.response_jsvalue.isEmpty()) {
+                ctxLog("finalizeWithoutDeinit: response_jsvalue != .zero", .{});
                 if (this.response_protected) {
                     this.response_jsvalue.unprotect();
                     this.response_protected = false;
@@ -1077,7 +1153,20 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
                 this.response_jsvalue = JSC.JSValue.zero;
             }
 
+            // if signal is not aborted, abort the signal
+            if (this.signal) |signal| {
+                this.signal = null;
+                if (this.aborted and !signal.aborted()) {
+                    const reason = JSC.WebCore.AbortSignal.createAbortError(JSC.ZigString.static("The user aborted a request"), &JSC.ZigString.Empty, this.server.globalThis);
+                    reason.ensureStillAlive();
+                    _ = signal.signal(reason);
+                }
+                _ = signal.unref();
+            }
+
             if (this.request_js_object != null) {
+                ctxLog("finalizeWithoutDeinit: request_js_object != null", .{});
+
                 var request_js = this.request_js_object.?.value();
                 request_js.ensureStillAlive();
 
@@ -1087,14 +1176,6 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
                 // User called .blob(), .json(), text(), or .arrayBuffer() on the Request object
                 // but we received nothing or the connection was aborted
                 if (request_js.as(Request)) |req| {
-                    if (req.signal) |signal| {
-                        // if signal is not aborted, abort the signal
-                        if (!signal.aborted()) {
-                            const reason = JSC.AbortSignal.createAbortError(JSC.ZigString.static("The user aborted a request"), &JSC.ZigString.Empty, this.server.globalThis);
-                            reason.ensureStillAlive();
-                            _ = signal.signal(reason);
-                        }
-                    }
                     // the promise is pending
                     if (req.body == .Locked and req.body.Locked.action != .none and req.body.Locked.promise != null) {
                         req.body.toErrorInstance(JSC.toTypeError(.ABORT_ERR, "Request aborted", .{}, this.server.globalThis), this.server.globalThis);
@@ -1104,6 +1185,7 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
             }
 
             if (this.promise) |promise| {
+                ctxLog("finalizeWithoutDeinit: this.promise != null", .{});
                 this.promise = null;
 
                 if (promise.asAnyPromise()) |prom| {
@@ -1113,22 +1195,27 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
             }
 
             if (this.byte_stream) |stream| {
+                ctxLog("finalizeWithoutDeinit: stream != null", .{});
+
                 this.byte_stream = null;
                 stream.unpipe();
             }
 
             if (this.pathname.len > 0) {
+                ctxLog("finalizeWithoutDeinit: this.pathname.len > 0 null", .{});
                 this.allocator.free(bun.constStrToU8(this.pathname));
                 this.pathname = "";
             }
         }
         pub fn finalize(this: *RequestContext) void {
+            ctxLog("finalize", .{});
             this.finalizeWithoutDeinit();
             this.markComplete();
             this.deinit();
         }
 
         pub fn deinit(this: *RequestContext) void {
+            ctxLog("deinit", .{});
             if (comptime Environment.allow_assert)
                 std.debug.assert(this.finalized);
 
@@ -1236,6 +1323,7 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
 
             if (!this.sendfile.has_set_on_writable) {
                 this.sendfile.has_set_on_writable = true;
+                this.has_marked_pending = true;
                 this.resp.onWritable(*RequestContext, onWritableSendfile, this);
             }
 
@@ -1268,6 +1356,7 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
                 this.finalize();
                 return true;
             } else {
+                this.has_marked_pending = true;
                 this.resp.onWritable(*RequestContext, onWritableBytes, this);
                 return true;
             }
@@ -1281,6 +1370,7 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
                 this.response_buf_owned.items.len = 0;
                 this.finalize();
             } else {
+                this.has_marked_pending = true;
                 this.resp.onWritable(*RequestContext, onWritableCompleteResponseBuffer, this);
             }
 
@@ -1577,8 +1667,9 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
                     streamLog("returned a promise", .{});
                     switch (promise.status(this.server.globalThis.vm())) {
                         .Pending => {
+                            streamLog("promise still Pending", .{});
                             // TODO: should this timeout?
-                            this.resp.onAborted(*ResponseStream, ResponseStream.onAborted, &response_stream.sink);
+                            this.setAbortHandler();
                             this.response_ptr.?.body.value = .{
                                 .Locked = .{
                                     .readable = stream,
@@ -1595,9 +1686,11 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
 
                         },
                         .Fulfilled => {
+                            streamLog("promise Fulfilled", .{});
                             this.handleResolveStream();
                         },
                         .Rejected => {
+                            streamLog("promise Rejected", .{});
                             this.handleRejectStream(this.server.globalThis, promise.result(this.server.globalThis.vm()));
                         },
                     }
@@ -1631,7 +1724,7 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
                 }
             }
 
-            this.resp.onAborted(*ResponseStream, ResponseStream.onAborted, &response_stream.sink);
+            this.setAbortHandler();
             streamLog("is in progress, but did not return a Promise. Finalizing request context", .{});
             this.finalize();
             stream.value.unprotect();
@@ -1709,6 +1802,12 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
                 switch (promise.status(vm.global.vm())) {
                     .Pending => {},
                     .Fulfilled => {
+                        if (ctx.signal == null) {
+                            if (request_object.signal) |signal| {
+                                ctx.signal = signal;
+                                _ = signal.ref();
+                            }
+                        }
                         const fulfilled_value = promise.result(vm.global.vm());
 
                         // if you return a Response object or a Promise<Response>
@@ -1751,6 +1850,12 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
                         return;
                     },
                     .Rejected => {
+                        if (ctx.signal == null) {
+                            if (request_object.signal) |signal| {
+                                ctx.signal = signal;
+                                _ = signal.ref();
+                            }
+                        }
                         ctx.handleReject(promise.result(vm.global.vm()));
                         return;
                     },
@@ -1786,11 +1891,12 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
             }
 
             // The user returned something that wasn't a promise or a promise with a response
-            if (!ctx.resp.hasResponded()) ctx.renderMissing();
+            if (!ctx.resp.hasResponded() and !ctx.has_marked_pending) ctx.renderMissing();
         }
 
         pub fn handleResolveStream(req: *RequestContext) void {
-            streamLog("onResolve", .{});
+            streamLog("handleResolveStream", .{});
+
             var wrote_anything = false;
             if (req.sink) |wrapper| {
                 wrapper.sink.pending_flush = null;
@@ -1810,6 +1916,9 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
                 }
             }
 
+            streamLog("onResolve({any})", .{wrote_anything});
+
+            //aborted so call finalizeForAbort
             if (req.aborted) {
                 req.finalizeForAbort();
                 return;
@@ -1821,7 +1930,7 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
                 req.resp.clearAborted();
                 req.renderMissing();
                 return;
-            } else if (!responded and wrote_anything and !req.aborted) {
+            } else if (!responded and wrote_anything) {
                 req.resp.clearAborted();
                 req.resp.endStream(req.shouldCloseConnection());
             }
@@ -1830,12 +1939,14 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
         }
 
         pub fn onResolveStream(_: *JSC.JSGlobalObject, callframe: *JSC.CallFrame) callconv(.C) JSValue {
+            streamLog("onResolveStream", .{});
             var args = callframe.arguments(2);
             var req: *@This() = args.ptr[args.len - 1].asPromisePtr(@This());
             req.handleResolveStream();
             return JSValue.jsUndefined();
         }
         pub fn onRejectStream(globalThis: *JSC.JSGlobalObject, callframe: *JSC.CallFrame) callconv(.C) JSValue {
+            streamLog("onRejectStream", .{});
             const args = callframe.arguments(2);
             var req = args.ptr[args.len - 1].asPromisePtr(@This());
             var err = args.ptr[0];
@@ -1844,6 +1955,7 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
         }
 
         pub fn handleRejectStream(req: *@This(), globalThis: *JSC.JSGlobalObject, err: JSValue) void {
+            streamLog("handleRejectStream", .{});
             var wrote_anything = req.has_written_status;
 
             if (req.sink) |wrapper| {
@@ -1866,6 +1978,7 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
 
             streamLog("onReject({any})", .{wrote_anything});
 
+            //aborted so call finalizeForAbort
             if (req.aborted) {
                 req.finalizeForAbort();
                 return;
@@ -2032,6 +2145,7 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
             } else {
                 // when it's the last one, we just want to know if it's done
                 if (stream.isDone()) {
+                    this.has_marked_pending = true;
                     this.resp.onWritable(*RequestContext, onWritableResponseBuffer, this);
                 }
             }
@@ -2056,6 +2170,8 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
         }
 
         pub fn doRender(this: *RequestContext) void {
+            ctxLog("render", .{});
+
             if (this.aborted) {
                 this.finalizeForAbort();
                 return;
@@ -2143,7 +2259,7 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
                 this.has_called_error_handler = true;
                 var args = [_]JSC.C.JSValueRef{value.asObjectRef()};
                 const result = JSC.C.JSObjectCallAsFunctionReturnValue(this.server.globalThis, this.server.config.onError.asObjectRef(), this.server.thisObject.asObjectRef(), 1, &args);
-
+                defer result.ensureStillAlive();
                 if (!result.isEmptyOrUndefinedOrNull()) {
                     if (result.toError()) |err| {
                         this.finishRunningErrorHandler(err, status);
@@ -2285,6 +2401,7 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
                 bytes.len,
                 this.shouldCloseConnection(),
             )) {
+                this.has_marked_pending = true;
                 this.resp.onWritable(*RequestContext, onWritableBytes, this);
                 // given a blob, we might not have set an abort handler yet
                 this.setAbortHandler();
@@ -2295,6 +2412,7 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
         }
 
         pub fn render(this: *RequestContext, response: *JSC.WebCore.Response) void {
+            ctxLog("render", .{});
             this.response_ptr = response;
 
             this.doRender();
@@ -2425,7 +2543,7 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
                     if (request.as(Request)) |req| {
                         var old = req.body;
                         old.Locked.onReceiveValue = null;
-                        req.body = .{ .Empty = {} };
+                        req.body = .{ .Null = {} };
                         old.resolve(&req.body, this.server.globalThis);
                         return;
                     }
@@ -2436,7 +2554,7 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
                     if (request.as(Request)) |req| {
                         var old = req.body;
                         old.Locked.onReceiveValue = null;
-                        req.body = .{ .Empty = {} };
+                        req.body = .{ .Null = {} };
                         old.toError(error.RequestBodyTooLarge, this.server.globalThis);
                         return;
                     }
@@ -2453,7 +2571,7 @@ fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comp
                 if (request.as(Request)) |req| {
                     var old = req.body;
                     old.Locked.onReceiveValue = null;
-                    req.body = .{ .Empty = {} };
+                    req.body = .{ .Null = {} };
                     old.resolve(&req.body, this.server.globalThis);
                     return;
                 }
@@ -3838,13 +3956,18 @@ pub const ServerWebSocket = struct {
             return JSValue.jsUndefined();
         }
 
-        var buf: [512]u8 = undefined;
-        const address = this.websocket.getRemoteAddress(&buf);
-        if (address.len == 0) {
-            return JSValue.jsUndefined();
-        }
+        var buf: [64]u8 = [_]u8{0} ** 64;
+        var text_buf: [512]u8 = undefined;
 
-        return ZigString.init(address).toValueGC(globalThis);
+        const address_bytes = this.websocket.getRemoteAddress(&buf);
+        const address: std.net.Address = switch (address_bytes.len) {
+            4 => std.net.Address.initIp4(address_bytes[0..4].*, 0),
+            16 => std.net.Address.initIp6(address_bytes[0..16].*, 0, 0, 0),
+            else => return JSValue.jsUndefined(),
+        };
+
+        const text = bun.fmt.formatIp(address, &text_buf) catch unreachable;
+        return ZigString.init(text).toValueGC(globalThis);
     }
 };
 
@@ -4204,7 +4327,7 @@ pub fn NewServer(comptime ssl_enabled_: bool, comptime debug_mode_: bool) type {
 
             var url: URL = undefined;
             var first_arg = args.nextEat().?;
-            var body: JSC.WebCore.Body.Value = .{ .Empty = {} };
+            var body: JSC.WebCore.Body.Value = .{ .Null = {} };
             var existing_request: ?WebCore.Request = null;
             // TODO: set Host header
             // TODO: set User-Agent header
@@ -4506,6 +4629,9 @@ pub fn NewServer(comptime ssl_enabled_: bool, comptime debug_mode_: bool) type {
                     zig_str = ZigString.init(std.fmt.allocPrint(bun.default_allocator, "OpenSSL {s}", .{message}) catch unreachable);
                     var encoded_str = zig_str.withEncoding();
                     encoded_str.mark();
+
+                    // We shouldn't *need* to do this but it's not entirely clear.
+                    BoringSSL.ERR_clear_error();
                 }
             }
 
@@ -4620,7 +4746,7 @@ pub fn NewServer(comptime ssl_enabled_: bool, comptime debug_mode_: bool) type {
                 .uws_request = req,
                 .https = ssl_enabled,
                 .body = .{
-                    .Empty = {},
+                    .Null = {},
                 },
             };
 
@@ -4669,8 +4795,12 @@ pub fn NewServer(comptime ssl_enabled_: bool, comptime debug_mode_: bool) type {
             ctx.request_js_object = args[0].asObjectRef();
             const request_value = args[0];
             request_value.ensureStillAlive();
-            const response_value = this.config.onRequest.callWithThis(this.globalThis, this.thisObject, &args);
 
+            const response_value = this.config.onRequest.callWithThis(this.globalThis, this.thisObject, &args);
+            if (request_object.signal) |signal| {
+                ctx.signal = signal;
+                _ = signal.ref();
+            }
             ctx.onResponse(
                 this,
                 req,
@@ -4700,7 +4830,7 @@ pub fn NewServer(comptime ssl_enabled_: bool, comptime debug_mode_: bool) type {
                 .upgrader = ctx,
                 .https = ssl_enabled,
                 .body = .{
-                    .Empty = {},
+                    .Null = {},
                 },
             };
             ctx.upgrade_context = upgrade_ctx;
@@ -4767,13 +4897,21 @@ pub fn NewServer(comptime ssl_enabled_: bool, comptime debug_mode_: bool) type {
             }
 
             const hostname = bun.span(this.config.hostname);
+
             // When "localhost" is specified, we omit the hostname entirely
             // Otherwise, "curl http://localhost:3000" doesn't actually work due to IPV6 vs IPV4 issues
             // This prints a spurious log si_destination_compare on macOS but only when debugger is connected
-            const host: [*:0]const u8 = if (hostname.len == 0 or (!ssl_enabled and strings.eqlComptime(hostname, "localhost")))
-                ""
-            else
-                this.config.hostname;
+            var host: [*:0]const u8 = undefined;
+            var host_buff: [1024:0]u8 = undefined;
+
+            if (hostname.len == 0 or (!ssl_enabled and strings.eqlComptime(hostname, "localhost"))) {
+                host = "";
+            } else if (hostname.len > 2 and hostname[0] == '[') {
+                // remove "[" and "]" from hostname
+                host = std.fmt.bufPrintZ(&host_buff, "{s}", .{hostname[1 .. hostname.len - 1]}) catch unreachable;
+            } else {
+                host = this.config.hostname;
+            }
 
             this.ref();
 

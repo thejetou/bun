@@ -23,6 +23,37 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+
+function binding(bindingName) {
+  "use strict";
+  bindingName !== "constants" &&
+    @throwTypeError(
+      'process.binding() is not supported in Bun. If that breaks something, please file an issue and include a reproducible code sample.'
+    );
+
+  var cache = globalThis.Symbol.for("process.bindings.constants");
+  var constants = globalThis[cache];
+  if (!constants) {
+    // TODO: make this less hacky.
+    // This calls require("node:fs").constants
+    // except, outside an ESM module.
+    const {constants: fs} = globalThis[globalThis.Symbol.for("Bun.lazy")](
+      "createImportMeta",
+      "node:process"
+    ).require(
+      "node:fs"
+    )
+    constants = {
+      fs,
+      zlib: {},
+      crypto: {},
+      os: @Bun._Os().constants,
+    };
+    globalThis[cache] = constants;
+  }
+  return constants;
+}
+
 function getStdioWriteStream(fd_, rawRequire) {
   var module = { path: "node:process", require: rawRequire };
   var require = path => module.require(path);
@@ -191,6 +222,8 @@ function getStdioWriteStream(fd_, rawRequire) {
     return normalied === "utf8" || normalied === "utf-8" || normalied === "buffer" || normalied === "binary";
   }
 
+  var readline;
+
   var FastStdioWriteStream = class StdioWriteStream extends EventEmitter {
     #fd;
     #innerStream;
@@ -241,6 +274,27 @@ function getStdioWriteStream(fd_, rawRequire) {
     get isTTY() {
       return (this.#isTTY ??= require("node:tty").isatty(this.#fd));
     }
+
+    cursorTo(x, y, callback) {
+      return (readline ??= require("readline")).cursorTo(this, x, y, callback);
+    }
+
+    moveCursor(dx, dy, callback) {
+      return (readline ??= require("readline")).moveCursor(this, dx, dy, callback);
+    }
+
+    clearLine(dir, callback) {
+      return (readline ??= require("readline")).clearLine(this, dir, callback);
+    }
+
+    clearScreenDown(callback) {
+      return (readline ??= require("readline")).clearScreenDown(this, callback);
+    }
+
+    // TODO: once implemented this.columns and this.rows should be uncommented
+    // getWindowSize() {
+    //   return [this.columns, this.rows];
+    // }
 
     ref() {
       this.#getWriter().ref();

@@ -14,7 +14,7 @@
   <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
   <a href="https://discord.com/invite/CXdq2DP29u">Discord</a>
   <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
-  <a href="https://github.com/oven-sh/zod/issues/new">Issues</a>
+  <a href="https://github.com/oven-sh/bun/issues/new">Issues</a>
   <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
   <a href="https://github.com/oven-sh/bun/issues/159">Roadmap</a>
   <br />
@@ -99,7 +99,7 @@ bun upgrade --canary
 - Runtime
   - [Runtime](https://bun.sh/docs/runtime/index)
   - [Module resolution](https://bun.sh/docs/runtime/modules)
-  - [Hot reloading](https://bun.sh/docs/runtime/hot)
+  - [Hot &amp; live reloading](https://bun.sh/docs/runtime/hot)
   - [Plugins](https://bun.sh/docs/runtime/plugins)
 - Ecosystem
   - [Node.js](https://bun.sh/docs/ecosystem/nodejs)

@@ -478,12 +478,10 @@ bool Bun__deepEquals(JSC__JSGlobalObject* globalObject, JSValue v1, JSValue v2, 
         }
 
         for (uint64_t i = 0; i < length; i++) {
-            // array holes come back as empty values with tryGetIndexQuickly()
             JSValue left = o1->canGetIndexQuickly(i)
                 ? o1->getIndexQuickly(i)
                 : o1->tryGetIndexQuickly(i);
             RETURN_IF_EXCEPTION(*scope, false);
-
             JSValue right = o2->canGetIndexQuickly(i)
                 ? o2->getIndexQuickly(i)
                 : o2->tryGetIndexQuickly(i);
@@ -699,6 +697,11 @@ bool Bun__deepEquals(JSC__JSGlobalObject* globalObject, JSValue v1, JSValue v2, 
 }
 
 extern "C" {
+
+bool WebCore__FetchHeaders__isEmpty(WebCore__FetchHeaders* arg0)
+{
+    return arg0->size() == 0;
+}
 
 void WebCore__FetchHeaders__toUWSResponse(WebCore__FetchHeaders* arg0, bool is_ssl, void* arg2)
 {
@@ -2031,6 +2034,21 @@ JSC__JSValue ZigString__toErrorInstance(const ZigString* str, JSC__JSGlobalObjec
     return JSC::JSValue::encode(Zig::getErrorInstance(str, globalObject));
 }
 
+JSC__JSValue ZigString__toTypeErrorInstance(const ZigString* str, JSC__JSGlobalObject* globalObject)
+{
+    return JSC::JSValue::encode(Zig::getTypeErrorInstance(str, globalObject));
+}
+
+JSC__JSValue ZigString__toSyntaxErrorInstance(const ZigString* str, JSC__JSGlobalObject* globalObject)
+{
+    return JSC::JSValue::encode(Zig::getSyntaxErrorInstance(str, globalObject));
+}
+
+JSC__JSValue ZigString__toRangeErrorInstance(const ZigString* str, JSC__JSGlobalObject* globalObject)
+{
+    return JSC::JSValue::encode(Zig::getRangeErrorInstance(str, globalObject));
+}
+
 static JSC::EncodedJSValue resolverFunctionCallback(JSC::JSGlobalObject* globalObject,
     JSC::CallFrame* callFrame)
 {
@@ -2455,10 +2473,6 @@ bool JSC__JSValue__isPrimitive(JSC__JSValue JSValue0)
 {
     return JSC::JSValue::decode(JSValue0).isPrimitive();
 }
-bool JSC__JSValue__isString(JSC__JSValue JSValue0)
-{
-    return JSC::JSValue::decode(JSValue0).isString();
-}
 bool JSC__JSValue__isSymbol(JSC__JSValue JSValue0)
 {
     return JSC::JSValue::decode(JSValue0).isSymbol();
@@ -2818,9 +2832,28 @@ int32_t JSC__JSValue__toInt32(JSC__JSValue JSValue0)
     return JSC::JSValue::decode(JSValue0).asInt32();
 }
 
+// truncates values larger than int32
 int32_t JSC__JSValue__coerceToInt32(JSC__JSValue JSValue0, JSC__JSGlobalObject* arg1)
 {
     JSC::JSValue value = JSC::JSValue::decode(JSValue0);
+    if (value.isCell() && value.isHeapBigInt()) {
+        return static_cast<int32_t>(value.toBigInt64(arg1));
+    }
+    return value.toInt32(arg1);
+}
+
+int64_t JSC__JSValue__coerceToInt64(JSC__JSValue JSValue0, JSC__JSGlobalObject* arg1)
+{
+    JSValue value = JSValue::decode(JSValue0);
+    if (value.isCell() && value.isHeapBigInt()) {
+        return value.toBigInt64(arg1);
+    }
+
+    int64_t result = tryConvertToInt52(value.asDouble());
+    if (result != JSValue::notInt52) {
+        return result;
+    }
+
     return value.toInt32(arg1);
 }
 
@@ -2847,6 +2880,32 @@ JSC__JSString* JSC__JSValue__toStringOrNull(JSC__JSValue JSValue0, JSC__JSGlobal
 {
     JSC::JSValue value = JSC::JSValue::decode(JSValue0);
     return value.toStringOrNull(arg1);
+}
+
+bool JSC__JSValue__toMatch(JSC__JSValue regexValue, JSC__JSGlobalObject* global, JSC__JSValue value)
+{
+    JSC::JSValue regex = JSC::JSValue::decode(regexValue);
+    JSC::JSValue str = JSC::JSValue::decode(value);
+    if (regex.asCell()->type() != RegExpObjectType || !str.isString()) {
+        return false;
+    }
+    JSC::RegExpObject* regexObject = jsDynamicCast<JSC::RegExpObject*>(regex);
+
+    return !!regexObject->match(global, JSC::asString(str));
+}
+
+bool JSC__JSValue__stringIncludes(JSC__JSValue value, JSC__JSGlobalObject* globalObject, JSC__JSValue other)
+{
+    VM& vm = globalObject->vm();
+    auto scope = DECLARE_CATCH_SCOPE(vm);
+
+    WTF::String stringToSearchIn = JSC::JSValue::decode(value).toWTFString(globalObject);
+    RETURN_IF_EXCEPTION(scope, false);
+
+    WTF::String searchString = JSC::JSValue::decode(other).toWTFString(globalObject);
+    RETURN_IF_EXCEPTION(scope, false);
+
+    return stringToSearchIn.find(searchString, 0) != WTF::notFound;
 }
 
 static void populateStackFrameMetadata(JSC::VM& vm, const JSC::StackFrame* stackFrame, ZigStackFrame* frame)
@@ -3231,7 +3290,8 @@ void JSC__VM__releaseWeakRefs(JSC__VM* arg0)
 static auto function_string_view = MAKE_STATIC_STRING_IMPL("Function");
 void JSC__JSValue__getClassName(JSC__JSValue JSValue0, JSC__JSGlobalObject* arg1, ZigString* arg2)
 {
-    JSC::JSCell* cell = JSC::JSValue::decode(JSValue0).asCell();
+    JSValue value = JSValue::decode(JSValue0);
+    JSC::JSCell* cell = value.asCell();
     if (cell == nullptr) {
         arg2->len = 0;
         return;
@@ -3244,12 +3304,16 @@ void JSC__JSValue__getClassName(JSC__JSValue JSValue0, JSC__JSGlobalObject* arg1
     if (view.length() == 0 || StringView(String(function_string_view)) == view) {
         JSC__JSValue__getNameProperty(JSValue0, arg1, arg2);
         return;
-    } else {
-        *arg2 = Zig::toZigString(view);
+    }
+
+    JSObject* obj = value.toObject(arg1);
+    StringView calculated = StringView(JSObject::calculatedClassName(obj));
+    if (calculated.length() > 0) {
+        *arg2 = Zig::toZigString(calculated);
         return;
     }
 
-    arg2->len = 0;
+    *arg2 = Zig::toZigString(view);
 }
 
 void JSC__JSValue__getNameProperty(JSC__JSValue JSValue0, JSC__JSGlobalObject* arg1, ZigString* arg2)
@@ -3358,8 +3422,11 @@ JSC__JSValue JSC__VM__runGC(JSC__VM* vm, bool sync)
 
     vm->finalizeSynchronousJSExecution();
 
+    WTF::releaseFastMallocFreeMemory();
+
     if (sync) {
         vm->heap.collectNow(JSC::Sync, JSC::CollectionScope::Full);
+        WTF::releaseFastMallocFreeMemory();
     } else {
         vm->heap.collectSync(JSC::CollectionScope::Full);
     }
@@ -3521,11 +3588,14 @@ enum class BuiltinNamesMap : uint8_t {
     url,
     body,
     data,
+    toString,
+    redirect,
 };
 
 static JSC::Identifier builtinNameMap(JSC::JSGlobalObject* globalObject, unsigned char name)
 {
-    auto clientData = WebCore::clientData(globalObject->vm());
+    auto& vm = globalObject->vm();
+    auto clientData = WebCore::clientData(vm);
     switch (static_cast<BuiltinNamesMap>(name)) {
     case BuiltinNamesMap::method: {
         return clientData->builtinNames().methodPublicName();
@@ -3545,7 +3615,24 @@ static JSC::Identifier builtinNameMap(JSC::JSGlobalObject* globalObject, unsigne
     case BuiltinNamesMap::data: {
         return clientData->builtinNames().dataPublicName();
     }
+    case BuiltinNamesMap::toString: {
+        return vm.propertyNames->toString;
     }
+    case BuiltinNamesMap::redirect: {
+        return clientData->builtinNames().redirectPublicName();
+    }
+    }
+}
+
+JSC__JSValue JSC__JSValue__fastGetDirect_(JSC__JSValue JSValue0, JSC__JSGlobalObject* globalObject, unsigned char arg2)
+{
+    JSC::JSValue value = JSC::JSValue::decode(JSValue0);
+    if (!value.isCell()) {
+        return JSValue::encode({});
+    }
+
+    return JSValue::encode(
+        value.getObject()->getDirect(globalObject->vm(), PropertyName(builtinNameMap(globalObject, arg2))));
 }
 
 JSC__JSValue JSC__JSValue__fastGet_(JSC__JSValue JSValue0, JSC__JSGlobalObject* globalObject, unsigned char arg2)
@@ -3601,10 +3688,6 @@ restart:
         bool anyHits = false;
         JSC::JSObject* objectToUse = prototypeObject.getObject();
         structure->forEachProperty(vm, [&](const PropertyTableEntry& entry) -> bool {
-            if ((entry.attributes() & PropertyAttribute::Accessor) != 0) {
-                return true;
-            }
-
             if ((entry.attributes() & (PropertyAttribute::Function)) == 0 && (entry.attributes() & (PropertyAttribute::Builtin)) != 0) {
                 return true;
             }
@@ -3630,7 +3713,7 @@ restart:
                 return true;
 
             JSC::JSValue propertyValue = objectToUse == object ? objectToUse->getDirect(entry.offset()) : JSValue();
-            if (!propertyValue || propertyValue.isGetterSetter()) {
+            if (!propertyValue || propertyValue.isGetterSetter() && !((entry.attributes() & PropertyAttribute::Accessor) != 0)) {
                 propertyValue = objectToUse->get(globalObject, prop);
             }
 
@@ -3689,10 +3772,6 @@ restart:
                 if (!object->getPropertySlot(globalObject, property, slot))
                     continue;
 
-                if ((slot.attributes() & PropertyAttribute::Accessor) != 0) {
-                    continue;
-                }
-
                 if ((slot.attributes() & PropertyAttribute::DontEnum) != 0) {
                     if (property == vm.propertyNames->length
                         || property == vm.propertyNames->underscoreProto
@@ -3712,7 +3791,9 @@ restart:
                 JSC::JSValue propertyValue = jsUndefined();
 
                 if ((slot.attributes() & PropertyAttribute::DontEnum) != 0) {
-                    if (slot.attributes() & PropertyAttribute::BuiltinOrFunction) {
+                    if ((slot.attributes() & PropertyAttribute::Accessor) != 0) {
+                        propertyValue = slot.getPureResult();
+                    } else if (slot.attributes() & PropertyAttribute::BuiltinOrFunction) {
                         propertyValue = slot.getValue(globalObject, property);
                     } else if (slot.isCustom()) {
                         propertyValue = slot.getValue(globalObject, property);
@@ -3721,6 +3802,8 @@ restart:
                     } else if (object->getOwnPropertySlot(object, globalObject, property, slot)) {
                         propertyValue = slot.getValue(globalObject, property);
                     }
+                } else if ((slot.attributes() & PropertyAttribute::Accessor) != 0) {
+                    propertyValue = slot.getPureResult();
                 } else {
                     propertyValue = slot.getValue(globalObject, property);
                 }
@@ -3785,6 +3868,33 @@ void JSC__JSValue__forEachPropertyOrdered(JSC__JSValue JSValue0, JSC__JSGlobalOb
     }
 }
 
+bool JSC__JSValue__isConstructor(JSC__JSValue JSValue0)
+{
+    JSValue value = JSValue::decode(JSValue0);
+    return value.isConstructor();
+}
+
+bool JSC__JSValue__isInstanceOf(JSC__JSValue JSValue0, JSC__JSGlobalObject* globalObject, JSC__JSValue JSValue1)
+{
+    VM& vm = globalObject->vm();
+
+    auto scope = DECLARE_CATCH_SCOPE(vm);
+
+    JSValue jsValue = JSValue::decode(JSValue0);
+    JSValue jsValue1 = JSValue::decode(JSValue1);
+    if (UNLIKELY(!jsValue1.isObject())) {
+        return false;
+    }
+    JSObject* jsConstructor = JSC::asObject(jsValue1);
+    if (UNLIKELY(!jsConstructor->structure()->typeInfo().implementsHasInstance()))
+        return false;
+    bool result = jsConstructor->hasInstance(globalObject, jsValue);
+
+    RETURN_IF_EXCEPTION(scope, false);
+
+    return result;
+}
+
 extern "C" JSC__JSValue JSC__JSValue__createRopeString(JSC__JSValue JSValue0, JSC__JSValue JSValue1, JSC__JSGlobalObject* globalObject)
 {
     return JSValue::encode(JSC::jsString(globalObject, JSC::JSValue::decode(JSValue0).toString(globalObject), JSC::JSValue::decode(JSValue1).toString(globalObject)));
@@ -3819,22 +3929,22 @@ extern "C" void JSC__JSGlobalObject__queueMicrotaskJob(JSC__JSGlobalObject* arg0
         JSC::JSValue::decode(JSValue4));
 }
 
-extern "C" JSC__JSValue JSC__AbortSignal__create(JSC__JSGlobalObject* globalObject)
+extern "C" JSC__JSValue WebCore__AbortSignal__create(JSC__JSGlobalObject* globalObject)
 {
     Zig::GlobalObject* thisObject = JSC::jsCast<Zig::GlobalObject*>(globalObject);
     auto* context = thisObject->scriptExecutionContext();
     auto abortSignal = WebCore::AbortSignal::create(context);
 
-    return JSValue::encode(toJSNewlyCreated<IDLInterface<JSC__AbortSignal>>(*globalObject, *jsCast<JSDOMGlobalObject*>(globalObject), WTFMove(abortSignal)));
+    return JSValue::encode(toJSNewlyCreated<IDLInterface<WebCore__AbortSignal>>(*globalObject, *jsCast<JSDOMGlobalObject*>(globalObject), WTFMove(abortSignal)));
 }
-extern "C" JSC__JSValue JSC__AbortSignal__toJS(JSC__AbortSignal* arg0, JSC__JSGlobalObject* globalObject)
+extern "C" JSC__JSValue WebCore__AbortSignal__toJS(WebCore__AbortSignal* arg0, JSC__JSGlobalObject* globalObject)
 {
     WebCore::AbortSignal* abortSignal = reinterpret_cast<WebCore::AbortSignal*>(arg0);
 
-    return JSValue::encode(toJS<IDLInterface<JSC__AbortSignal>>(*globalObject, *jsCast<JSDOMGlobalObject*>(globalObject), *abortSignal));
+    return JSValue::encode(toJS<IDLInterface<WebCore__AbortSignal>>(*globalObject, *jsCast<JSDOMGlobalObject*>(globalObject), *abortSignal));
 }
 
-extern "C" JSC__AbortSignal* JSC__AbortSignal__signal(JSC__AbortSignal* arg0, JSC__JSValue JSValue1)
+extern "C" WebCore__AbortSignal* WebCore__AbortSignal__signal(WebCore__AbortSignal* arg0, JSC__JSValue JSValue1)
 {
 
     WebCore::AbortSignal* abortSignal = reinterpret_cast<WebCore::AbortSignal*>(arg0);
@@ -3842,43 +3952,43 @@ extern "C" JSC__AbortSignal* JSC__AbortSignal__signal(JSC__AbortSignal* arg0, JS
     return arg0;
 }
 
-extern "C" bool JSC__AbortSignal__aborted(JSC__AbortSignal* arg0)
+extern "C" bool WebCore__AbortSignal__aborted(WebCore__AbortSignal* arg0)
 {
     WebCore::AbortSignal* abortSignal = reinterpret_cast<WebCore::AbortSignal*>(arg0);
     return abortSignal->aborted();
 }
 
-extern "C" JSC__JSValue JSC__AbortSignal__abortReason(JSC__AbortSignal* arg0)
+extern "C" JSC__JSValue WebCore__AbortSignal__abortReason(WebCore__AbortSignal* arg0)
 {
     WebCore::AbortSignal* abortSignal = reinterpret_cast<WebCore::AbortSignal*>(arg0);
-    return JSC::JSValue::encode(abortSignal->reason().getValue());
+    return JSC::JSValue::encode(abortSignal->reason());
 }
 
-extern "C" JSC__AbortSignal* JSC__AbortSignal__ref(JSC__AbortSignal* arg0)
+extern "C" WebCore__AbortSignal* WebCore__AbortSignal__ref(WebCore__AbortSignal* arg0)
 {
     WebCore::AbortSignal* abortSignal = reinterpret_cast<WebCore::AbortSignal*>(arg0);
     abortSignal->ref();
     return arg0;
 }
 
-extern "C" JSC__AbortSignal* JSC__AbortSignal__unref(JSC__AbortSignal* arg0)
+extern "C" WebCore__AbortSignal* WebCore__AbortSignal__unref(WebCore__AbortSignal* arg0)
 {
     WebCore::AbortSignal* abortSignal = reinterpret_cast<WebCore::AbortSignal*>(arg0);
     abortSignal->deref();
     return arg0;
 }
-extern "C" void JSC__AbortSignal__cleanNativeBindings(JSC__AbortSignal* arg0, void* arg1)
+extern "C" void WebCore__AbortSignal__cleanNativeBindings(WebCore__AbortSignal* arg0, void* arg1)
 {
     WebCore::AbortSignal* abortSignal = reinterpret_cast<WebCore::AbortSignal*>(arg0);
     abortSignal->cleanNativeBindings(arg1);
 }
 
-extern "C" JSC__AbortSignal* JSC__AbortSignal__addListener(JSC__AbortSignal* arg0, void* ctx, void (*callback)(void* ctx, JSC__JSValue reason))
+extern "C" WebCore__AbortSignal* WebCore__AbortSignal__addListener(WebCore__AbortSignal* arg0, void* ctx, void (*callback)(void* ctx, JSC__JSValue reason))
 {
     WebCore::AbortSignal* abortSignal = reinterpret_cast<WebCore::AbortSignal*>(arg0);
 
     if (abortSignal->aborted()) {
-        callback(ctx, JSC::JSValue::encode(abortSignal->reason().getValue()));
+        callback(ctx, JSC::JSValue::encode(abortSignal->reason()));
         return arg0;
     }
 
@@ -3886,7 +3996,7 @@ extern "C" JSC__AbortSignal* JSC__AbortSignal__addListener(JSC__AbortSignal* arg
 
     return arg0;
 }
-extern "C" JSC__AbortSignal* JSC__AbortSignal__fromJS(JSC__JSValue value)
+extern "C" WebCore__AbortSignal* WebCore__AbortSignal__fromJS(JSC__JSValue value)
 {
     JSC::JSValue decodedValue = JSC::JSValue::decode(value);
     if (decodedValue.isEmpty())
@@ -3895,10 +4005,10 @@ extern "C" JSC__AbortSignal* JSC__AbortSignal__fromJS(JSC__JSValue value)
     if (!object)
         return nullptr;
 
-    return reinterpret_cast<JSC__AbortSignal*>(&object->wrapped());
+    return reinterpret_cast<WebCore__AbortSignal*>(&object->wrapped());
 }
 static auto ABORT_ERROR_NAME = MAKE_STATIC_STRING_IMPL("AbortError");
-extern "C" JSC__JSValue JSC__AbortSignal__createAbortError(const ZigString* message, const ZigString* arg1,
+extern "C" JSC__JSValue WebCore__AbortSignal__createAbortError(const ZigString* message, const ZigString* arg1,
     JSC__JSGlobalObject* globalObject)
 {
     JSC::VM& vm = globalObject->vm();
@@ -3920,7 +4030,7 @@ extern "C" JSC__JSValue JSC__AbortSignal__createAbortError(const ZigString* mess
 }
 
 static auto TIMEOUT_ERROR_NAME = MAKE_STATIC_STRING_IMPL("TimeoutError");
-extern "C" JSC__JSValue JSC__AbortSignal__createTimeoutError(const ZigString* message, const ZigString* arg1,
+extern "C" JSC__JSValue WebCore__AbortSignal__createTimeoutError(const ZigString* message, const ZigString* arg1,
     JSC__JSGlobalObject* globalObject)
 {
     JSC::VM& vm = globalObject->vm();

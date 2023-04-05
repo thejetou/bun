@@ -41,6 +41,7 @@ const HTTPThread = @import("bun").HTTP.HTTPThread;
 const JSC = @import("bun").JSC;
 const jest = JSC.Jest;
 const TestRunner = JSC.Jest.TestRunner;
+const Snapshots = JSC.Jest.Snapshots;
 const Test = TestRunner.Test;
 const NetworkThread = @import("bun").HTTP.NetworkThread;
 const uws = @import("bun").uws;
@@ -69,6 +70,7 @@ pub const CommandLineReporter = struct {
     last_dot: u32 = 0,
     summary: Summary = Summary{},
     prev_file: u64 = 0,
+    repeat_count: u32 = 1,
 
     failures_to_repeat_buf: std.ArrayListUnmanaged(u8) = .{},
     skips_to_repeat_buf: std.ArrayListUnmanaged(u8) = .{},
@@ -362,8 +364,12 @@ pub const TestCommand = struct {
             loader.* = DotEnv.Loader.init(map, ctx.allocator);
             break :brk loader;
         };
-        JSC.C.JSCInitialize();
+        bun.JSC.initialize();
         HTTPThread.init() catch {};
+
+        var snapshot_file_buf = std.ArrayList(u8).init(ctx.allocator);
+        var snapshot_values = Snapshots.ValuesHashMap.init(ctx.allocator);
+        var snapshot_counts = bun.StringHashMap(usize).init(ctx.allocator);
 
         var reporter = try ctx.allocator.create(CommandLineReporter);
         reporter.* = CommandLineReporter{
@@ -371,6 +377,13 @@ pub const TestCommand = struct {
                 .allocator = ctx.allocator,
                 .log = ctx.log,
                 .callback = undefined,
+                .snapshots = Snapshots{
+                    .allocator = ctx.allocator,
+                    .update_snapshots = ctx.test_options.update_snapshots,
+                    .file_buf = &snapshot_file_buf,
+                    .values = &snapshot_values,
+                    .counts = &snapshot_counts,
+                },
             },
             .callback = undefined,
         };
@@ -381,6 +394,7 @@ pub const TestCommand = struct {
             .onTestFail = CommandLineReporter.handleTestFail,
             .onTestSkip = CommandLineReporter.handleTestSkip,
         };
+        reporter.repeat_count = @max(ctx.test_options.repeat_count, 1);
         reporter.jest.callback = &reporter.callback;
         jest.Jest.runner = &reporter.jest;
 
@@ -388,6 +402,7 @@ pub const TestCommand = struct {
         js_ast.Stmt.Data.Store.create(default_allocator);
         var vm = try JSC.VirtualMachine.init(ctx.allocator, ctx.args, null, ctx.log, env_loader);
         vm.argv = ctx.passthrough;
+        vm.preload = ctx.preloads;
 
         try vm.bundler.configureDefines();
         vm.bundler.options.rewrite_jest_for_tests = true;
@@ -416,9 +431,14 @@ pub const TestCommand = struct {
 
         const test_files = try scanner.results.toOwnedSlice();
         if (test_files.len > 0) {
+            vm.hot_reload = ctx.debug.hot_reload;
+            if (vm.hot_reload != .none)
+                JSC.HotReloader.enableHotModuleReloading(vm);
             // vm.bundler.fs.fs.readDirectory(_dir: string, _handle: ?std.fs.Dir)
             runAllTests(reporter, vm, test_files, ctx.allocator);
         }
+
+        try jest.Jest.runner.?.snapshots.writeSnapshotFile();
 
         if (reporter.summary.pass > 20) {
             if (reporter.summary.skip > 0) {
@@ -479,8 +499,49 @@ pub const TestCommand = struct {
             }
 
             Output.prettyError(" {d:5>} fail<r>\n", .{reporter.summary.fail});
+            var print_expect_calls = reporter.summary.expectations > 0;
+            if (reporter.jest.snapshots.total > 0) {
+                const passed = reporter.jest.snapshots.passed;
+                const failed = reporter.jest.snapshots.failed;
+                const added = reporter.jest.snapshots.added;
 
-            if (reporter.summary.expectations > 0) Output.prettyError(" {d:5>} expect() calls\n", .{reporter.summary.expectations});
+                var first = true;
+                if (print_expect_calls and added == 0 and failed == 0) {
+                    print_expect_calls = false;
+                    Output.prettyError(" {d:5>} snapshots, {d:5>} expect() calls", .{ reporter.jest.snapshots.total, reporter.summary.expectations });
+                } else {
+                    Output.prettyError(" <d>snapshots:<r> ", .{});
+
+                    if (passed > 0) {
+                        Output.prettyError("<d>{d} passed<r>", .{passed});
+                        first = false;
+                    }
+
+                    if (added > 0) {
+                        if (first) {
+                            first = false;
+                            Output.prettyError("<b>+{d} added<r>", .{added});
+                        } else {
+                            Output.prettyError("<b>, {d} added<r>", .{added});
+                        }
+                    }
+
+                    if (failed > 0) {
+                        if (first) {
+                            first = false;
+                            Output.prettyError("<red>{d} failed<r>", .{failed});
+                        } else {
+                            Output.prettyError(", <red>{d} failed<r>", .{failed});
+                        }
+                    }
+                }
+
+                Output.prettyError("\n", .{});
+            }
+
+            if (print_expect_calls) {
+                Output.prettyError(" {d:5>} expect() calls\n", .{reporter.summary.expectations});
+            }
 
             Output.prettyError("Ran {d} tests across {d} files ", .{
                 reporter.summary.fail + reporter.summary.pass,
@@ -491,6 +552,19 @@ pub const TestCommand = struct {
 
         Output.prettyError("\n", .{});
         Output.flush();
+
+        if (vm.hot_reload == .watch) {
+            vm.eventLoop().tickPossiblyForever();
+
+            while (true) {
+                while (vm.eventLoop().tasks.count > 0 or vm.active_tasks > 0 or vm.uws_event_loop.?.active > 0) {
+                    vm.tick();
+                    vm.eventLoop().autoTickActive();
+                }
+
+                vm.eventLoop().tickPossiblyForever();
+            }
+        }
 
         if (reporter.summary.fail > 0) {
             Global.exit(1);
@@ -567,56 +641,70 @@ pub const TestCommand = struct {
         Output.flush();
 
         vm.main_hash = @truncate(u32, bun.hash(resolution.path_pair.primary.text));
-        var promise = try vm.loadEntryPoint(resolution.path_pair.primary.text);
+        var repeat_count = reporter.repeat_count;
+        var repeat_index: u32 = 0;
+        while (repeat_index < repeat_count) : (repeat_index += 1) {
+            var promise = try vm.loadEntryPoint(resolution.path_pair.primary.text);
 
-        switch (promise.status(vm.global.vm())) {
-            .Rejected => {
-                var result = promise.result(vm.global.vm());
-                vm.runErrorHandler(result, null);
-                reporter.summary.fail += 1;
-                return;
-            },
-            else => {},
-        }
-
-        {
-            vm.global.vm().drainMicrotasks();
-            var count = vm.unhandled_error_counter;
-            vm.global.handleRejectedPromises();
-            while (vm.unhandled_error_counter > count) {
-                count = vm.unhandled_error_counter;
-                vm.global.vm().drainMicrotasks();
-                vm.global.handleRejectedPromises();
+            switch (promise.status(vm.global.vm())) {
+                .Rejected => {
+                    var result = promise.result(vm.global.vm());
+                    vm.runErrorHandler(result, null);
+                    reporter.summary.fail += 1;
+                    return;
+                },
+                else => {},
             }
-            vm.global.vm().doWork();
-        }
 
-        var modules: []*jest.DescribeScope = reporter.jest.files.items(.module_scope)[file_start..];
-        for (modules) |module| {
-            vm.onUnhandledRejectionCtx = null;
-            vm.onUnhandledRejection = jest.TestRunnerTask.onUnhandledRejection;
-            module.runTests(JSC.JSValue.zero, vm.global);
-            vm.eventLoop().tick();
+            {
+                vm.global.vm().drainMicrotasks();
+                var count = vm.unhandled_error_counter;
+                vm.global.handleRejectedPromises();
+                while (vm.unhandled_error_counter > count) {
+                    count = vm.unhandled_error_counter;
+                    vm.global.vm().drainMicrotasks();
+                    vm.global.handleRejectedPromises();
+                }
+                vm.global.vm().doWork();
+            }
 
-            var prev_unhandled_count = vm.unhandled_error_counter;
-            while (vm.active_tasks > 0) {
-                if (!jest.Jest.runner.?.has_pending_tests) jest.Jest.runner.?.drain();
+            const file_end = reporter.jest.files.len;
+            for (file_start..file_end) |module_id| {
+                const module = reporter.jest.files.items(.module_scope)[module_id];
+
+                vm.onUnhandledRejectionCtx = null;
+                vm.onUnhandledRejection = jest.TestRunnerTask.onUnhandledRejection;
+                module.runTests(JSC.JSValue.zero, vm.global);
                 vm.eventLoop().tick();
 
-                while (jest.Jest.runner.?.has_pending_tests) {
-                    vm.eventLoop().autoTick();
-                    if (!jest.Jest.runner.?.has_pending_tests) break;
+                var prev_unhandled_count = vm.unhandled_error_counter;
+                while (vm.active_tasks > 0) {
+                    if (!jest.Jest.runner.?.has_pending_tests) jest.Jest.runner.?.drain();
                     vm.eventLoop().tick();
-                }
 
-                while (prev_unhandled_count < vm.unhandled_error_counter) {
-                    vm.global.handleRejectedPromises();
-                    prev_unhandled_count = vm.unhandled_error_counter;
+                    while (jest.Jest.runner.?.has_pending_tests) {
+                        vm.eventLoop().autoTick();
+                        if (!jest.Jest.runner.?.has_pending_tests) break;
+                        vm.eventLoop().tick();
+                    }
+
+                    while (prev_unhandled_count < vm.unhandled_error_counter) {
+                        vm.global.handleRejectedPromises();
+                        prev_unhandled_count = vm.unhandled_error_counter;
+                    }
                 }
+                _ = vm.global.vm().runGC(false);
             }
-            _ = vm.global.vm().runGC(false);
+
+            vm.global.vm().clearMicrotaskCallback();
+            vm.global.handleRejectedPromises();
+            if (repeat_index > 0) {
+                vm.clearEntryPoint();
+                var entry = JSC.ZigString.init(resolution.path_pair.primary.text);
+                vm.global.deleteModuleRegistryEntry(&entry);
+                Output.prettyErrorln("<r>{s} <d>[RUN {d:0>4}]:<r>\n", .{ resolution.path_pair.primary.name.filename, repeat_index + 1 });
+                Output.flush();
+            }
         }
-        vm.global.vm().clearMicrotaskCallback();
-        vm.global.handleRejectedPromises();
     }
 };

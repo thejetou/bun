@@ -92,8 +92,8 @@ This page is updated regularly to reflect compatibility status of the latest ver
 ---
 
 - {% anchor id="node_http" %} [`node:http`](https://nodejs.org/api/http.html) {% /anchor %}
-- 🟡
-- Missing `http.OutgoingMessage` `http.validateHeader{Name|Value}`.  Module provides partial compatibility for `http.globalAgent` `http.Agent` `http.setMaxIdleHTTPParsers`. Note that exports marked as partially compatible likely have no effect (no-op) but will not cause errors when porting code utilizing these exports.
+- 🟢
+- Fully implemented.
 
 ---
 
@@ -158,8 +158,8 @@ This page is updated regularly to reflect compatibility status of the latest ver
 ---
 
 - {% anchor id="node_querystring" %} [`node:querystring`](https://nodejs.org/api/querystring.html) {% /anchor %}
-- 🟡
-- Missing `querystring.escape` and `querystring.unescape`.
+- 🟢
+- Fully implemented.
 
 ---
 
@@ -419,7 +419,7 @@ The table below lists all globals implemented by Node.js and Bun's current compa
 
 - {% anchor id="node_formdata" %} [`FormData`](https://developer.mozilla.org/en-US/docs/Web/API/FormData) {% /anchor %}
 - 🟢
-- Fully implemented. Added in Bun 0.7.0.
+- Fully implemented. Added in Bun 0.5.7.
 
 ---
 

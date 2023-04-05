@@ -361,6 +361,10 @@ pub const VirtualMachine = struct {
     timer: Bun.Timer = Bun.Timer{},
     uws_event_loop: ?*uws.Loop = null,
     pending_unref_counter: i32 = 0,
+    preload: []const string = &[_][]const u8{},
+    unhandled_pending_rejection_to_capture: ?*JSC.JSValue = null,
+
+    hot_reload: bun.CLI.Command.HotReload = .none,
 
     /// hide bun:wrap from stack traces
     /// bun:wrap is very noisy
@@ -450,6 +454,10 @@ pub const VirtualMachine = struct {
         return VMHolder.vm.?;
     }
 
+    pub fn mimeType(this: *VirtualMachine, str: []const u8) ?bun.HTTP.MimeType {
+        return this.rareData().mimeTypeFromString(this.allocator, str);
+    }
+
     pub const GCLevel = enum(u3) {
         none = 0,
         mild = 1,
@@ -472,6 +480,14 @@ pub const VirtualMachine = struct {
 
     pub fn onQuietUnhandledRejectionHandler(this: *VirtualMachine, _: *JSC.JSGlobalObject, _: JSC.JSValue) void {
         this.unhandled_error_counter += 1;
+    }
+
+    pub fn onQuietUnhandledRejectionHandlerCaptureValue(this: *VirtualMachine, _: *JSC.JSGlobalObject, value: JSC.JSValue) void {
+        this.unhandled_error_counter += 1;
+        value.ensureStillAlive();
+        if (this.unhandled_pending_rejection_to_capture) |ptr| {
+            ptr.* = value;
+        }
     }
 
     pub fn unhandledRejectionScope(this: *VirtualMachine) UnhandledRejectionScope {
@@ -538,6 +554,11 @@ pub const VirtualMachine = struct {
 
     pub fn reload(this: *VirtualMachine) void {
         Output.debug("Reloading...", .{});
+        if (this.hot_reload == .watch) {
+            Output.flush();
+            bun.reloadProcess(bun.default_allocator, !strings.eqlComptime(this.bundler.env.map.get("BUN_CONFIG_NO_CLEAR_TERMINAL_ON_RELOAD") orelse "0", "true"));
+        }
+
         this.global.reload();
         this.pending_internal_promise = this.reloadEntryPoint(this.main) catch @panic("Failed to reload");
     }
@@ -990,8 +1011,7 @@ pub const VirtualMachine = struct {
                 )) {
                     .success => |r| r,
                     .failure => |e| e,
-                    .pending => unreachable,
-                    .not_found => if (!retry_on_not_found)
+                    .pending, .not_found => if (!retry_on_not_found)
                         error.ModuleNotFound
                     else {
                         retry_on_not_found = false;
@@ -1441,7 +1461,12 @@ pub const VirtualMachine = struct {
 
     pub fn reloadEntryPoint(this: *VirtualMachine, entry_path: []const u8) !*JSInternalPromise {
         this.main = entry_path;
-        try this.entry_point.generate(this.bun_watcher != null, Fs.PathName.init(entry_path), main_file_name);
+        try this.entry_point.generate(
+            this.allocator,
+            this.bun_watcher != null,
+            Fs.PathName.init(entry_path),
+            main_file_name,
+        );
         this.eventLoop().ensureWaker();
 
         var promise: *JSInternalPromise = undefined;
@@ -1459,6 +1484,72 @@ pub const VirtualMachine = struct {
                 if (promise.status(this.global.vm()) == .Rejected)
                     return promise;
             }
+
+            for (this.preload) |preload| {
+                var result = switch (this.bundler.resolver.resolveAndAutoInstall(
+                    this.bundler.fs.top_level_dir,
+                    normalizeSource(preload),
+                    .stmt,
+                    .read_only,
+                )) {
+                    .success => |r| r,
+                    .failure => |e| {
+                        this.log.addErrorFmt(
+                            null,
+                            logger.Loc.Empty,
+                            this.allocator,
+                            "{s} resolving preload {any}",
+                            .{
+                                @errorName(e),
+                                js_printer.formatJSONString(preload),
+                            },
+                        ) catch unreachable;
+                        return e;
+                    },
+                    .pending, .not_found => {
+                        this.log.addErrorFmt(
+                            null,
+                            logger.Loc.Empty,
+                            this.allocator,
+                            "preload not found {any}",
+                            .{
+                                js_printer.formatJSONString(preload),
+                            },
+                        ) catch unreachable;
+                        return error.ModuleNotFound;
+                    },
+                };
+                promise = JSModuleLoader.loadAndEvaluateModule(this.global, &ZigString.init(result.path().?.text));
+                this.pending_internal_promise = promise;
+
+                // pending_internal_promise can change if hot module reloading is enabled
+                if (this.bun_watcher != null) {
+                    this.eventLoop().performGC();
+                    switch (this.pending_internal_promise.status(this.global.vm())) {
+                        JSC.JSPromise.Status.Pending => {
+                            while (this.pending_internal_promise.status(this.global.vm()) == .Pending) {
+                                this.eventLoop().tick();
+
+                                if (this.pending_internal_promise.status(this.global.vm()) == .Pending) {
+                                    this.eventLoop().autoTick();
+                                }
+                            }
+                        },
+                        else => {},
+                    }
+                } else {
+                    this.eventLoop().performGC();
+                    this.waitForPromise(JSC.AnyPromise{
+                        .Internal = promise,
+                    });
+                }
+
+                if (promise.status(this.global.vm()) == .Rejected)
+                    return promise;
+            }
+
+            // only load preloads once
+            this.preload.len = 0;
 
             promise = JSModuleLoader.loadAndEvaluateModule(this.global, ZigString.static(main_file_name));
             this.pending_internal_promise = promise;
@@ -1553,7 +1644,6 @@ pub const VirtualMachine = struct {
     // If there were multiple errors, it could be contained in an AggregateError.
     // In that case, this function becomes recursive.
     // In all other cases, we will convert it to a ZigException.
-    const errors_property = ZigString.init("errors");
     pub fn printErrorlikeObject(
         this: *VirtualMachine,
         value: JSValue,

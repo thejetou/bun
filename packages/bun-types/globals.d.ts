@@ -234,21 +234,21 @@ interface ImportMeta {
    * "file:///Users/me/projects/my-app/src/my-app.ts"
    * ```
    */
-  url: string;
+  readonly url: string;
   /**
    * Absolute path to the source file
    */
-  path: string;
+  readonly path: string;
   /**
    * Absolute path to the directory containing the source file.
    *
    * Does not have a trailing slash
    */
-  dir: string;
+  readonly dir: string;
   /**
    * Filename of the source file
    */
-  file: string;
+  readonly file: string;
   /**
    * Resolve a module ID the same as if you imported it
    *
@@ -284,6 +284,25 @@ interface ImportMeta {
    * relevant.
    */
   require: NodeJS.Require;
+
+  /**
+   * Did the current file start the process?
+   *
+   * @example
+   * ```ts
+   * if (import.meta.main) {
+   *  console.log("I started the process!");
+   * }
+   * ```
+   *
+   * @example
+   * ```ts
+   * console.log(
+   *   import.meta.main === (import.meta.path === Bun.main)
+   * )
+   * ```
+   */
+  readonly main: boolean;
 }
 
 /**
@@ -417,7 +436,7 @@ interface BlobInterface {
   formData(): Promise<FormData>;
 }
 
-type BlobPart = string | Blob | BufferSource | ArrayBuffer;
+type BlobPart = string | Blob | BufferSource;
 interface BlobPropertyBag {
   /** Set a default "type" */
   type?: string;
@@ -447,6 +466,7 @@ interface Headers {
   entries(): IterableIterator<[string, string]>;
   keys(): IterableIterator<string>;
   values(): IterableIterator<string>;
+  [Symbol.iterator](): IterableIterator<[string, string]>;
   forEach(
     callbackfn: (value: string, key: string, parent: Headers) => void,
     thisArg?: any,
@@ -493,7 +513,11 @@ declare var Headers: {
   new (init?: HeadersInit): Headers;
 };
 
-type HeadersInit = Array<[string, string]> | Record<string, string> | Headers;
+type HeadersInit =
+  | Headers
+  | Record<string, string>
+  | Array<[string, string]>
+  | IterableIterator<[string, string]>;
 type ResponseType =
   | "basic"
   | "cors"
@@ -533,7 +557,7 @@ interface FormData {
   has(name: string): boolean;
   set(name: string, value: string | Blob, fileName?: string): void;
   keys(): IterableIterator<string>;
-  values(): IterableIterator<string>;
+  values(): IterableIterator<FormDataEntryValue>;
   entries(): IterableIterator<[string, FormDataEntryValue]>;
   [Symbol.iterator](): IterableIterator<[string, FormDataEntryValue]>;
   forEach(
@@ -554,7 +578,7 @@ declare class Blob implements BlobInterface {
    * @param `parts` - An array of strings, numbers, BufferSource, or [Blob](https://developer.mozilla.org/en-US/docs/Web/API/Blob) objects
    * @param `options` - An object containing properties to be added to the [Blob](https://developer.mozilla.org/en-US/docs/Web/API/Blob)
    */
-  constructor(parts?: BlobPart[] | Blob, options?: BlobPropertyBag);
+  constructor(parts?: BlobPart[], options?: BlobPropertyBag);
   /**
    * Create a new view **without 🚫 copying** the underlying data.
    *
@@ -564,7 +588,29 @@ declare class Blob implements BlobInterface {
    * @param end The index that sets the end of the view.
    *
    */
-  slice(begin?: number, end?: number): Blob;
+  slice(begin?: number, end?: number, contentType?: string): Blob;
+
+  /**
+   * Create a new view **without 🚫 copying** the underlying data.
+   *
+   * Similar to [`BufferSource.subarray`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/BufferSource/subarray)
+   *
+   * @param begin The index that sets the beginning of the view.
+   * @param end The index that sets the end of the view.
+   *
+   */
+  slice(begin?: number, contentType?: string): Blob;
+
+  /**
+   * Create a new view **without 🚫 copying** the underlying data.
+   *
+   * Similar to [`BufferSource.subarray`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/BufferSource/subarray)
+   *
+   * @param begin The index that sets the beginning of the view.
+   * @param end The index that sets the end of the view.
+   *
+   */
+  slice(contentType?: string): Blob;
 
   /**
    * Read the data from the blob as a string. It will be decoded from UTF-8.
@@ -612,7 +658,7 @@ declare class Blob implements BlobInterface {
 interface ResponseInit {
   headers?: HeadersInit;
   /** @default 200 */
-  status?: number;
+  status?: number | bigint;
 
   /** @default "OK" */
   statusText?: string;
@@ -636,7 +682,13 @@ interface ResponseInit {
  */
 declare class Response implements BlobInterface {
   constructor(
-    body?: ReadableStream | BlobPart | BlobPart[] | null | FormData,
+    body?:
+      | ReadableStream
+      | BlobPart
+      | BlobPart[]
+      | FormData
+      | URLSearchParams
+      | null,
     options?: ResponseInit,
   );
 
@@ -824,9 +876,9 @@ type ReferrerPolicy =
   | "strict-origin"
   | "strict-origin-when-cross-origin"
   | "unsafe-url";
-type RequestInfo = Request | string | RequestInit;
+// type RequestInfo = Request | string | RequestInit;
 
-type BodyInit = ReadableStream | XMLHttpRequestBodyInit;
+type BodyInit = ReadableStream | XMLHttpRequestBodyInit | URLSearchParams;
 type XMLHttpRequestBodyInit = Blob | BufferSource | string | FormData;
 type ReadableStreamController<T> = ReadableStreamDefaultController<T>;
 type ReadableStreamDefaultReadResult<T> =
@@ -842,7 +894,7 @@ interface RequestInit {
   /**
    * A string indicating how the request will interact with the browser's cache to set request's cache.
    *
-   * Note: as of Bun v0.0.74, this is not implemented yet.
+   * Note: as of Bun v0.5.7, this is not implemented yet.
    */
   cache?: RequestCache;
   /**
@@ -856,7 +908,7 @@ interface RequestInit {
   /**
    * A cryptographic hash of the resource to be fetched by request. Sets request's integrity.
    *
-   * Note: as of Bun v0.0.74, this is not implemented yet.
+   * Note: as of Bun v0.5.7, this is not implemented yet.
    */
   integrity?: string;
   /**
@@ -889,8 +941,6 @@ interface RequestInit {
   referrerPolicy?: ReferrerPolicy;
   /**
    * An AbortSignal to set request's signal.
-   *
-   * Note: as of Bun v0.0.74, this is not implemented yet.
    */
   signal?: AbortSignal | null;
   /**
@@ -937,7 +987,10 @@ interface FetchRequestInit extends RequestInit {
  * ```
  */
 declare class Request implements BlobInterface {
-  constructor(requestInfo: RequestInfo, requestInit?: RequestInit);
+  // Request | string | RequestInit;
+  constructor(requestInfo: string, requestInit?: RequestInit);
+  constructor(requestInfo: RequestInit & { url: string });
+  constructor(requestInfo: Request, requestInit?: RequestInit);
 
   /**
    * Read or write the HTTP headers for this request.
@@ -1071,6 +1124,13 @@ declare class Request implements BlobInterface {
    * @returns Promise<FormData> - The body of the request as a {@link FormData}.
    */
   formData(): Promise<FormData>;
+
+  /**
+   * Has the body of the request been read?
+   *
+   * [Request.bodyUsed](https://developer.mozilla.org/en-US/docs/Web/API/Request/bodyUsed)
+   */
+  readonly bodyUsed: boolean;
 }
 
 declare interface Crypto {
@@ -1318,17 +1378,17 @@ declare var performance: {
  * Cancel a repeating timer by its timer ID.
  * @param id timer id
  */
-declare function clearInterval(id?: number): void;
+declare function clearInterval(id?: number | Timer): void;
 /**
  * Cancel a delayed function call by its timer ID.
  * @param id timer id
  */
-declare function clearTimeout(id?: number): void;
+declare function clearTimeout(id?: number | Timer): void;
 /**
  * Cancel an immediate function call by its immediate ID.
  * @param id immediate id
  */
-declare function clearImmediate(id?: number): void;
+declare function clearImmediate(id?: number | Timer): void;
 // declare function createImageBitmap(image: ImageBitmapSource, options?: ImageBitmapOptions): Promise<ImageBitmap>;
 // declare function createImageBitmap(image: ImageBitmapSource, sx: number, sy: number, sw: number, sh: number, options?: ImageBitmapOptions): Promise<ImageBitmap>;
 /**
@@ -1343,7 +1403,7 @@ declare function clearImmediate(id?: number): void;
  */
 
 declare function fetch(
-  url: string | URL,
+  url: string | URL | Request,
   init?: FetchRequestInit,
 ): Promise<Response>;
 
@@ -1496,7 +1556,7 @@ interface AbortController {
   /**
    * Invoking this method will set this object's AbortSignal's aborted flag and signal to any observers that the associated activity is to be aborted.
    */
-  abort(): void;
+  abort(reason?: any): void;
 }
 
 /** EventTarget is a DOM interface implemented by objects that can receive events and may have listeners for them. */
@@ -1552,7 +1612,7 @@ declare var EventTarget: {
 };
 
 /** An event which takes place in the DOM. */
-interface Event {
+interface Event<T extends EventTarget = EventTarget> {
   /**
    * Returns true or false depending on how event was initialized. True
    * if event goes through its target's ancestors in reverse tree order,
@@ -1577,7 +1637,7 @@ interface Event {
    * Returns the object whose event listener's callback is currently
    * being invoked.
    */
-  readonly currentTarget: EventTarget | null;
+  readonly currentTarget: T | null;
   /**
    * Returns true if preventDefault() was invoked successfully to
    * indicate cancelation, and false otherwise.
@@ -1877,6 +1937,7 @@ interface URLSearchParams {
   ): void;
   /** Returns a string containing a query string suitable for use in a URL. Does not include the question mark. */
   toString(): string;
+  [Symbol.iterator](): IterableIterator<[string, FormDataEntryValue]>;
 }
 
 declare var URLSearchParams: {
@@ -1925,7 +1986,7 @@ interface EventMap {
 }
 
 interface AbortSignalEventMap {
-  abort: Event;
+  abort: Event<AbortSignal>;
 }
 
 interface AddEventListenerOptions extends EventListenerOptions {
@@ -1940,6 +2001,12 @@ interface AbortSignal extends EventTarget {
    * Returns true if this AbortSignal's AbortController has signaled to abort, and false otherwise.
    */
   readonly aborted: boolean;
+
+  /**
+   * The reason the signal aborted, or undefined if not aborted.
+   */
+  readonly reason: any;
+
   onabort: ((this: AbortSignal, ev: Event) => any) | null;
   addEventListener<K extends keyof AbortSignalEventMap>(
     type: K,
@@ -1961,7 +2028,12 @@ interface AbortSignal extends EventTarget {
     listener: EventListenerOrEventListenerObject,
     options?: boolean | EventListenerOptions,
   ): void;
+}
 
+declare var AbortSignal: {
+  prototype: AbortSignal;
+  new (): AbortSignal;
+  abort(reason?: any): AbortSignal;
   /**
    * Create an AbortSignal which times out after milliseconds
    *
@@ -1978,11 +2050,6 @@ interface AbortSignal extends EventTarget {
    * ```
    */
   timeout(milliseconds: number): AbortSignal;
-}
-
-declare var AbortSignal: {
-  prototype: AbortSignal;
-  new (): AbortSignal;
 };
 
 // type AlgorithmIdentifier = Algorithm | string;
@@ -2121,7 +2188,11 @@ interface ReadableStream<R = any> {
 declare var ReadableStream: {
   prototype: ReadableStream;
   new <R = any>(
-    underlyingSource?: DirectUnderlyingSource<R> | UnderlyingSource<R>,
+    underlyingSource?: UnderlyingSource<R>,
+    strategy?: QueuingStrategy<R>,
+  ): ReadableStream<R>;
+  new <R = any>(
+    underlyingSource?: DirectUnderlyingSource<R>,
     strategy?: QueuingStrategy<R>,
   ): ReadableStream<R>;
 };

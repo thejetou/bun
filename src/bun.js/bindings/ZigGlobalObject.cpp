@@ -181,7 +181,7 @@ constexpr size_t DEFAULT_ERROR_STACK_TRACE_LIMIT = 10;
 // #include <iostream>
 static bool has_loaded_jsc = false;
 
-extern "C" void JSCInitialize()
+extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(const char* ptr, size_t length))
 {
     if (has_loaded_jsc)
         return;
@@ -208,6 +208,22 @@ extern "C" void JSCInitialize()
         JSC::Options::useResizableArrayBuffer() = true;
         JSC::Options::showPrivateScriptsInStackTraces() = true;
         JSC::Options::useSetMethods() = true;
+
+        if (LIKELY(envc > 0)) {
+            while (envc--) {
+                const char* env = (const char*)envp[envc];
+                // need to check for \0 so we might as well make this single pass
+                // strlen would check the end of the string
+                if (LIKELY(!(env[0] == 'B' && env[1] == 'U' && env[2] == 'N' && env[3] == '_' && env[4] == 'J' && env[5] == 'S' && env[6] == 'C' && env[7] == '_'))) {
+                    continue;
+                }
+
+                if (UNLIKELY(!JSC::Options::setOption(env + 8))) {
+                    onCrash(env, strlen(env));
+                }
+            }
+        }
+
         JSC::Options::assertOptionsAreCoherent();
     }
 }
@@ -943,8 +959,7 @@ JSC_DEFINE_HOST_FUNCTION(functionBTOA,
 
     if (!stringToEncode.isAllLatin1()) {
         auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
-        // TODO: DOMException
-        JSC::throwTypeError(globalObject, scope, "The string contains invalid characters."_s);
+        throwException(globalObject, scope, createDOMException(globalObject, ExceptionCode::InvalidCharacterError));
         return JSC::JSValue::encode(JSC::JSValue {});
     }
 
@@ -975,8 +990,7 @@ static JSC_DEFINE_HOST_FUNCTION(functionATOB,
                                                         });
     if (!decodedData) {
         auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
-        // TODO: DOMException
-        JSC::throwTypeError(globalObject, scope, "The string contains invalid characters."_s);
+        throwException(globalObject, scope, createDOMException(globalObject, ExceptionCode::InvalidCharacterError));
         return JSC::JSValue::encode(JSC::JSValue {});
     }
 

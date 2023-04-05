@@ -61,7 +61,7 @@ declare module "bun" {
   /**
    * Start a fast HTTP server.
    *
-   * @param options Server options (port defaults to $PORT || 8080)
+   * @param options Server options (port defaults to $PORT || 3000)
    *
    * -----
    *
@@ -395,7 +395,9 @@ declare module "bun" {
       stream?: boolean;
     }): void;
 
-    write(chunk: string | ArrayBufferView | ArrayBuffer): number;
+    write(
+      chunk: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer,
+    ): number;
     /**
      * Flush the internal buffer
      *
@@ -498,7 +500,7 @@ declare module "bun" {
          * `"system"` uses the same API underneath (except non-blocking).
          *
          */
-        backend?: "c-ares" | "system" | "getaddrinfo";
+        backend?: "libc" | "c-ares" | "system" | "getaddrinfo";
       },
     ): Promise<DNSLookup[]>;
   };
@@ -534,7 +536,9 @@ declare module "bun" {
      *
      * If the file descriptor is not writable yet, the data is buffered.
      */
-    write(chunk: string | ArrayBufferView | ArrayBuffer): number;
+    write(
+      chunk: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer,
+    ): number;
     /**
      * Flush the internal buffer, committing the data to disk or the pipe.
      */
@@ -616,8 +620,26 @@ declare module "bun" {
      *
      * @param begin - start offset in bytes
      * @param end - absolute offset in bytes (relative to 0)
+     * @param contentType - MIME type for the new FileBlob
      */
-    slice(begin?: number, end?: number): FileBlob;
+    slice(begin?: number, end?: number, contentType?: string): FileBlob;
+
+    /**
+     * Offset any operation on the file starting at `begin`
+     *
+     * Similar to [`TypedArray.subarray`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/subarray). Does not copy the file, open the file, or modify the file.
+     *
+     * If `begin` > 0, {@link Bun.write()} will be slower on macOS
+     *
+     * @param begin - start offset in bytes
+     * @param contentType - MIME type for the new FileBlob
+     */
+    slice(begin?: number, contentType?: string): FileBlob;
+
+    /**
+     * @param contentType - MIME type for the new FileBlob
+     */
+    slice(contentType?: string): FileBlob;
 
     /**
      * Incremental writer for files and pipes.
@@ -650,38 +672,38 @@ declare module "bun" {
    * @param seed The seed to use.
    */
   export const hash: ((
-    data: string | ArrayBufferView | ArrayBuffer,
+    data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer,
     seed?: number,
   ) => number | bigint) &
     Hash;
 
   interface Hash {
     wyhash: (
-      data: string | ArrayBufferView | ArrayBuffer,
+      data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer,
       seed?: number,
     ) => number | bigint;
     crc32: (
-      data: string | ArrayBufferView | ArrayBuffer,
+      data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer,
       seed?: number,
     ) => number | bigint;
     adler32: (
-      data: string | ArrayBufferView | ArrayBuffer,
+      data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer,
       seed?: number,
     ) => number | bigint;
     cityHash32: (
-      data: string | ArrayBufferView | ArrayBuffer,
+      data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer,
       seed?: number,
     ) => number | bigint;
     cityHash64: (
-      data: string | ArrayBufferView | ArrayBuffer,
+      data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer,
       seed?: number,
     ) => number | bigint;
     murmur32v3: (
-      data: string | ArrayBufferView | ArrayBuffer,
+      data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer,
       seed?: number,
     ) => number | bigint;
     murmur64v2: (
-      data: string | ArrayBufferView | ArrayBuffer,
+      data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer,
       seed?: number,
     ) => number | bigint;
   }
@@ -989,7 +1011,7 @@ declare module "bun" {
      *
      */
     send(
-      data: string | ArrayBufferView | ArrayBuffer,
+      data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer,
       compress?: boolean,
     ): ServerWebSocketSendStatus;
 
@@ -1101,7 +1123,7 @@ declare module "bun" {
      */
     publish(
       topic: string,
-      data: string | ArrayBufferView | ArrayBuffer,
+      data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer,
       compress?: boolean,
     ): ServerWebSocketSendStatus;
 
@@ -1470,6 +1492,7 @@ declare module "bun" {
     ) => Response | Promise<Response> | undefined | void | Promise<undefined>;
   }
 
+  export type AnyFunction = (..._: any[]) => any;
   export interface ServeOptions extends GenericServeOptions {
     /**
      * Handle HTTP requests
@@ -1739,7 +1762,7 @@ declare module "bun" {
      */
     publish(
       topic: string,
-      data: string | ArrayBufferView | ArrayBuffer,
+      data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer,
       compress?: boolean,
     ): ServerWebSocketSendStatus;
 
@@ -1944,7 +1967,7 @@ declare module "bun" {
      * @param level
      * @returns The previous level
      */
-    gcAggressionLevel(level: 0 | 1 | 2): 0 | 1 | 2;
+    gcAggressionLevel(level?: 0 | 1 | 2): 0 | 1 | 2;
   }
   export const unsafe: unsafe;
 
@@ -2474,13 +2497,13 @@ declare module "bun" {
     /**
      * The source code of the module
      */
-    contents: string | ArrayBufferView | ArrayBuffer;
+    contents: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer;
     /**
      * The loader to use for this file
      *
      * "css" will be added in a future version of Bun.
      */
-    loader: "js" | "jsx" | "ts" | "tsx";
+    loader: "js" | "jsx" | "ts" | "tsx" | "json" | "toml";
   }
 
   interface OnLoadResultObject {
@@ -2672,7 +2695,7 @@ declare module "bun" {
          */
         builder: PluginBuilder,
       ): void | Promise<void>;
-    }): ReturnType<typeof options["setup"]>;
+    }): ReturnType<(typeof options)["setup"]>;
 
     /**
      * Deactivate all plugins
@@ -2797,7 +2820,7 @@ declare module "bun" {
     reload(options: Pick<Partial<SocketOptions>, "socket">): void;
     data: Data;
   }
-  interface TCPSocketListener<Data> extends SocketListener<Data> {
+  interface TCPSocketListener<Data = unknown> extends SocketListener<Data> {
     readonly port: number;
     readonly hostname: string;
   }
@@ -3148,6 +3171,8 @@ declare module "bun" {
       /** The base path to use when routing */
       assetPrefix?: string;
       origin?: string;
+      /** Limit the pages to those with particular file extensions. */
+      fileExtensions?: string[];
     });
 
     // todo: URL
@@ -3343,13 +3368,15 @@ type TypedArray =
   | Int32Array
   | Uint32Array
   | Float32Array
-  | Float64Array;
+  | Float64Array
+  | BigInt64Array
+  | BigUint64Array;
 
 type TimeLike = string | number | Date;
 type StringOrBuffer = string | TypedArray | ArrayBufferLike;
 type PathLike = string | TypedArray | ArrayBufferLike | URL;
 type PathOrFileDescriptor = PathLike | number;
-type NoParamCallback = VoidFunction;
+type NoParamCallback = (err: ErrnoException | null) => void;
 type BufferEncoding =
   | "buffer"
   | "utf8"

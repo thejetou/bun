@@ -48,10 +48,47 @@
 
 namespace WebCore {
 
+const JSC::ConstructAbility s_processObjectInternalsBindingCodeConstructAbility = JSC::ConstructAbility::CannotConstruct;
+const JSC::ConstructorKind s_processObjectInternalsBindingCodeConstructorKind = JSC::ConstructorKind::None;
+const JSC::ImplementationVisibility s_processObjectInternalsBindingCodeImplementationVisibility = JSC::ImplementationVisibility::Public;
+const int s_processObjectInternalsBindingCodeLength = 709;
+static const JSC::Intrinsic s_processObjectInternalsBindingCodeIntrinsic = JSC::NoIntrinsic;
+const char* const s_processObjectInternalsBindingCode =
+    "(function (bindingName) {\n" \
+    "  \"use strict\";\n" \
+    "  bindingName !== \"constants\" &&\n" \
+    "    @throwTypeError(\n" \
+    "      'process.binding() is not supported in Bun. If that breaks something, please file an issue and include a reproducible code sample.'\n" \
+    "    );\n" \
+    "\n" \
+    "  var cache = globalThis.Symbol.for(\"process.bindings.constants\");\n" \
+    "  var constants = globalThis[cache];\n" \
+    "  if (!constants) {\n" \
+    "    //\n" \
+    "    //\n" \
+    "    //\n" \
+    "    const {constants: fs} = globalThis[globalThis.Symbol.for(\"Bun.lazy\")](\n" \
+    "      \"createImportMeta\",\n" \
+    "      \"node:process\"\n" \
+    "    ).require(\n" \
+    "      \"node:fs\"\n" \
+    "    )\n" \
+    "    constants = {\n" \
+    "      fs,\n" \
+    "      zlib: {},\n" \
+    "      crypto: {},\n" \
+    "      os: @Bun._Os().constants,\n" \
+    "    };\n" \
+    "    globalThis[cache] = constants;\n" \
+    "  }\n" \
+    "  return constants;\n" \
+    "})\n" \
+;
+
 const JSC::ConstructAbility s_processObjectInternalsGetStdioWriteStreamCodeConstructAbility = JSC::ConstructAbility::CannotConstruct;
 const JSC::ConstructorKind s_processObjectInternalsGetStdioWriteStreamCodeConstructorKind = JSC::ConstructorKind::None;
 const JSC::ImplementationVisibility s_processObjectInternalsGetStdioWriteStreamCodeImplementationVisibility = JSC::ImplementationVisibility::Public;
-const int s_processObjectInternalsGetStdioWriteStreamCodeLength = 9767;
+const int s_processObjectInternalsGetStdioWriteStreamCodeLength = 10295;
 static const JSC::Intrinsic s_processObjectInternalsGetStdioWriteStreamCodeIntrinsic = JSC::NoIntrinsic;
 const char* const s_processObjectInternalsGetStdioWriteStreamCode =
     "(function (fd_, rawRequire) {\n" \
@@ -224,6 +261,8 @@ const char* const s_processObjectInternalsGetStdioWriteStreamCode =
     "    return normalied === \"utf8\" || normalied === \"utf-8\" || normalied === \"buffer\" || normalied === \"binary\";\n" \
     "  }\n" \
     "\n" \
+    "  var readline;\n" \
+    "\n" \
     "  var FastStdioWriteStream = class StdioWriteStream extends EventEmitter {\n" \
     "    #fd;\n" \
     "    #innerStream;\n" \
@@ -274,6 +313,27 @@ const char* const s_processObjectInternalsGetStdioWriteStreamCode =
     "    get isTTY() {\n" \
     "      return (this.#isTTY ??= require(\"node:tty\").isatty(this.#fd));\n" \
     "    }\n" \
+    "\n" \
+    "    cursorTo(x, y, callback) {\n" \
+    "      return (readline ??= require(\"readline\")).cursorTo(this, x, y, callback);\n" \
+    "    }\n" \
+    "\n" \
+    "    moveCursor(dx, dy, callback) {\n" \
+    "      return (readline ??= require(\"readline\")).moveCursor(this, dx, dy, callback);\n" \
+    "    }\n" \
+    "\n" \
+    "    clearLine(dir, callback) {\n" \
+    "      return (readline ??= require(\"readline\")).clearLine(this, dir, callback);\n" \
+    "    }\n" \
+    "\n" \
+    "    clearScreenDown(callback) {\n" \
+    "      return (readline ??= require(\"readline\")).clearScreenDown(this, callback);\n" \
+    "    }\n" \
+    "\n" \
+    "    //\n" \
+    "    //\n" \
+    "    //\n" \
+    "    //\n" \
     "\n" \
     "    ref() {\n" \
     "      this.#getWriter().ref();\n" \

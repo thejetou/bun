@@ -18,7 +18,7 @@ Features include:
 - Datatype conversions (`BLOB` becomes `Uint8Array`)
 - The fastest performance of any SQLite driver for JavaScript
 
-The `bun:sqlite` module is roughly 3-6x faster than `better-sqlite3` and 8-9x faster than `deno.land/x/sqlite` for read queries. Each driver was benchmarked against the [Northwind Traders](https://github.com/jpwhite3/northwind-SQLite3/blob/46d5f8a64f396f87cd374d1600dbf521523980e8/Northwind_large.sqlite.zip) dataset. View and run the [benchmark source](<[./bench/sqlite](https://github.com/oven-sh/bun/tree/main/bench/sqlite)>).
+The `bun:sqlite` module is roughly 3-6x faster than `better-sqlite3` and 8-9x faster than `deno.land/x/sqlite` for read queries. Each driver was benchmarked against the [Northwind Traders](https://github.com/jpwhite3/northwind-SQLite3/blob/46d5f8a64f396f87cd374d1600dbf521523980e8/Northwind_large.sqlite.zip) dataset. View and run the [benchmark source](https://github.com/oven-sh/bun/tree/main/bench/sqlite).
 
 {% image width="738" alt="SQLite benchmarks for Bun, better-sqlite3, and deno.land/x/sqlite" src="https://user-images.githubusercontent.com/709451/168459263-8cd51ca3-a924-41e9-908d-cf3478a3b7f3.png" caption="Benchmarked on an M1 MacBook Pro (64GB) running macOS 12.3.1" /%}
 
@@ -140,7 +140,7 @@ query.get({ $message: "Hello world" });
 // => { $message: "Hello world" }
 ```
 
-Internally, this calls [`sqlite3_reset`](https://www.sqlite.org/capi3ref.html#sqlite3_reset) and calls [`sqlite3_step`](https://www.sqlite.org/capi3ref.html#sqlite3_step) once. Stepping through all the rows is not necessary when you only want the first row.
+Internally, this calls [`sqlite3_reset`](https://www.sqlite.org/capi3ref.html#sqlite3_reset) followed by [`sqlite3_step`](https://www.sqlite.org/capi3ref.html#sqlite3_step) until it no longer returns `SQLITE_ROW`. If the query returns no rows, `undefined` is returned.
 
 ### `.run()`
 
@@ -211,7 +211,7 @@ Queries can contain parameters. These can be numerical (`?1`) or named (`$param`
 
 ```ts#Query
 const query = db.query("SELECT * FROM foo WHERE bar = $bar");
-const results = await query.all({
+const results = query.all({
   $bar: "bar",
 });
 ```
@@ -230,7 +230,7 @@ Numbered (positional) parameters work too:
 
 ```ts#Query
 const query = db.query("SELECT ?1, ?2");
-const results = await query.all("hello", "goodbye");
+const results = query.all("hello", "goodbye");
 ```
 
 ```ts#Results

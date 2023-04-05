@@ -1,5 +1,5 @@
-const picohttp = @import("bun").picohttp;
 const bun = @import("bun");
+const picohttp = bun.picohttp;
 const JSC = bun.JSC;
 const string = bun.string;
 const Output = bun.Output;
@@ -10,6 +10,9 @@ const MutableString = bun.MutableString;
 const FeatureFlags = bun.FeatureFlags;
 const stringZ = bun.stringZ;
 const C = bun.C;
+const Loc = bun.logger.Loc;
+const Log = bun.logger.Log;
+const DotEnv = @import("./env_loader.zig");
 const std = @import("std");
 const URL = @import("./url.zig").URL;
 pub const Method = @import("./http/method.zig").Method;
@@ -18,16 +21,16 @@ const Lock = @import("./lock.zig").Lock;
 const HTTPClient = @This();
 const Zlib = @import("./zlib.zig");
 const StringBuilder = @import("./string_builder.zig");
-const AsyncIO = @import("bun").AsyncIO;
-const ThreadPool = @import("bun").ThreadPool;
-const BoringSSL = @import("bun").BoringSSL;
+const AsyncIO = bun.AsyncIO;
+const ThreadPool = bun.ThreadPool;
+const BoringSSL = bun.BoringSSL;
 pub const NetworkThread = @import("./network_thread.zig");
 const ObjectPool = @import("./pool.zig").ObjectPool;
 const SOCK = os.SOCK;
 const Arena = @import("./mimalloc_arena.zig").Arena;
 const ZlibPool = @import("./http/zlib.zig");
 const URLBufferPool = ObjectPool([4096]u8, null, false, 10);
-const uws = @import("bun").uws;
+const uws = bun.uws;
 pub const MimeType = @import("./http/mime_type.zig");
 pub const URLPath = @import("./http/url_path.zig");
 // This becomes Arena.allocator
@@ -39,6 +42,9 @@ const Batch = NetworkThread.Batch;
 const TaggedPointerUnion = @import("./tagged_pointer.zig").TaggedPointerUnion;
 const DeadSocket = opaque {};
 var dead_socket = @intToPtr(*DeadSocket, 1);
+//TODO: this needs to be freed when Worker Threads are implemented
+var socket_async_http_abort_tracker = std.AutoArrayHashMap(u32, *uws.Socket).init(bun.default_allocator);
+var async_http_id: std.atomic.Atomic(u32) = std.atomic.Atomic(u32).init(0);
 
 const print_every = 0;
 var print_every_i: usize = 0;
@@ -475,6 +481,7 @@ fn NewHTTPContext(comptime ssl: bool) type {
 
 const UnboundedQueue = @import("./bun.js/unbounded_queue.zig").UnboundedQueue;
 const Queue = UnboundedQueue(AsyncHTTP, .next);
+const ShutdownQueue = UnboundedQueue(AsyncHTTP, .next);
 
 pub const HTTPThread = struct {
     var http_thread_loaded: std.atomic.Atomic(bool) = std.atomic.Atomic(bool).init(false);
@@ -484,6 +491,7 @@ pub const HTTPThread = struct {
     https_context: NewHTTPContext(true),
 
     queued_tasks: Queue = Queue{},
+    queued_shutdowns: ShutdownQueue = ShutdownQueue{},
     has_awoken: std.atomic.Atomic(bool) = std.atomic.Atomic(bool).init(false),
     timer: std.time.Timer = undefined,
     const threadlog = Output.scoped(.HTTPThread, true);
@@ -552,9 +560,22 @@ pub const HTTPThread = struct {
     }
 
     fn drainEvents(this: *@This()) void {
+        while (this.queued_shutdowns.pop()) |http| {
+            if (socket_async_http_abort_tracker.fetchSwapRemove(http.async_http_id)) |socket_ptr| {
+                if (http.client.isHTTPS()) {
+                    const socket = uws.SocketTLS.from(socket_ptr.value);
+                    socket.shutdown();
+                } else {
+                    const socket = uws.SocketTCP.from(socket_ptr.value);
+                    socket.shutdown();
+                }
+            }
+        }
+
         var count: usize = 0;
-        var remaining: usize = AsyncHTTP.max_simultaneous_requests - AsyncHTTP.active_requests_count.loadUnchecked();
-        if (remaining == 0) return;
+        var active = AsyncHTTP.active_requests_count.load(.Monotonic);
+        const max = AsyncHTTP.max_simultaneous_requests.load(.Monotonic);
+        if (active >= max) return;
         defer {
             if (comptime Environment.allow_assert) {
                 if (count > 0)
@@ -571,8 +592,8 @@ pub const HTTPThread = struct {
                 count += 1;
             }
 
-            remaining -= 1;
-            if (remaining == 0) break;
+            active += 1;
+            if (active >= max) break;
         }
     }
 
@@ -600,6 +621,13 @@ pub const HTTPThread = struct {
         processEvents_(this);
         unreachable;
     }
+
+    pub fn scheduleShutdown(this: *@This(), http: *AsyncHTTP) void {
+        this.queued_shutdowns.push(http);
+        if (this.has_awoken.load(.Monotonic))
+            this.loop.wakeup();
+    }
+
     pub fn schedule(this: *@This(), batch: Batch) void {
         if (batch.len == 0)
             return;
@@ -632,7 +660,9 @@ pub fn onOpen(
             std.debug.assert(is_ssl == client.url.isHTTPS());
         }
     }
-
+    if (client.aborted != null) {
+        socket_async_http_abort_tracker.put(client.async_http_id, socket.socket) catch unreachable;
+    }
     log("Connected {s} \n", .{client.url.href});
 
     if (client.hasSignalAborted()) {
@@ -1000,15 +1030,9 @@ proxy_authorization: ?[]u8 = null,
 proxy_tunneling: bool = false,
 proxy_tunnel: ?ProxyTunnel = null,
 aborted: ?*std.atomic.Atomic(bool) = null,
+async_http_id: u32 = 0,
 
-pub fn init(
-    allocator: std.mem.Allocator,
-    method: Method,
-    url: URL,
-    header_entries: Headers.Entries,
-    header_buf: string,
-    signal: ?*std.atomic.Atomic(bool),
-) HTTPClient {
+pub fn init(allocator: std.mem.Allocator, method: Method, url: URL, header_entries: Headers.Entries, header_buf: string, signal: ?*std.atomic.Atomic(bool)) HTTPClient {
     return HTTPClient{
         .allocator = allocator,
         .method = method,
@@ -1151,7 +1175,6 @@ pub const AsyncHTTP = struct {
     allocator: std.mem.Allocator,
     request_header_buf: string = "",
     method: Method = Method.GET,
-    max_retry_count: u32 = 0,
     url: URL,
     http_proxy: ?URL = null,
     real: ?*AsyncHTTP = null,
@@ -1165,18 +1188,44 @@ pub const AsyncHTTP = struct {
     redirected: bool = false,
 
     response_encoding: Encoding = Encoding.identity,
-    retries_count: u32 = 0,
     verbose: bool = false,
 
     client: HTTPClient = undefined,
     err: ?anyerror = null,
+    async_http_id: u32 = 0,
 
     state: AtomicState = AtomicState.init(State.pending),
     elapsed: u64 = 0,
     gzip_elapsed: u64 = 0,
 
     pub var active_requests_count = std.atomic.Atomic(usize).init(0);
-    pub var max_simultaneous_requests: usize = 256;
+    pub var max_simultaneous_requests = std.atomic.Atomic(usize).init(256);
+
+    pub fn loadEnv(allocator: std.mem.Allocator, logger: *Log, env: *DotEnv.Loader) void {
+        if (env.map.get("BUN_CONFIG_MAX_HTTP_REQUESTS")) |max_http_requests| {
+            const max = std.fmt.parseInt(u16, max_http_requests, 10) catch {
+                logger.addErrorFmt(
+                    null,
+                    Loc.Empty,
+                    allocator,
+                    "BUN_CONFIG_MAX_HTTP_REQUESTS value \"{s}\" is not a valid integer between 1 and 65535",
+                    .{max_http_requests},
+                ) catch unreachable;
+                return;
+            };
+            if (max == 0) {
+                logger.addWarningFmt(
+                    null,
+                    Loc.Empty,
+                    allocator,
+                    "BUN_CONFIG_MAX_HTTP_REQUESTS value must be a number between 1 and 65535",
+                    .{},
+                ) catch unreachable;
+                return;
+            }
+            AsyncHTTP.max_simultaneous_requests.store(max, .Monotonic);
+        }
+    }
 
     pub fn deinit(this: *AsyncHTTP) void {
         this.response_headers.deinit(this.allocator);
@@ -1207,18 +1256,10 @@ pub const AsyncHTTP = struct {
         http_proxy: ?URL,
         signal: ?*std.atomic.Atomic(bool),
     ) AsyncHTTP {
-        var this = AsyncHTTP{
-            .allocator = allocator,
-            .url = url,
-            .method = method,
-            .request_headers = headers,
-            .request_header_buf = headers_buf,
-            .request_body = request_body,
-            .response_buffer = response_buffer,
-            .completion_callback = callback,
-            .http_proxy = http_proxy,
-        };
+        var this = AsyncHTTP{ .allocator = allocator, .url = url, .method = method, .request_headers = headers, .request_header_buf = headers_buf, .request_body = request_body, .response_buffer = response_buffer, .completion_callback = callback, .http_proxy = http_proxy, .async_http_id = if (signal != null) async_http_id.fetchAdd(1, .Monotonic) else 0 };
+
         this.client = HTTPClient.init(allocator, method, url, headers, headers_buf, signal);
+        this.client.async_http_id = this.async_http_id;
         this.client.timeout = timeout;
         this.client.http_proxy = this.http_proxy;
         if (http_proxy) |proxy| {
@@ -1322,14 +1363,15 @@ pub const AsyncHTTP = struct {
         std.debug.assert(active_requests > 0);
 
         var completion = this.completion_callback;
-        this.response = result.response;
         this.elapsed = http_thread.timer.read() -| this.elapsed;
         this.redirected = this.client.remaining_redirect_count != default_redirect_count;
         if (!result.isSuccess()) {
             this.err = result.fail;
+            this.response = null;
             this.state.store(State.fail, .Monotonic);
         } else {
             this.err = null;
+            this.response = result.response;
             this.state.store(.success, .Monotonic);
         }
         this.client.deinit();
@@ -1343,7 +1385,7 @@ pub const AsyncHTTP = struct {
 
         completion.function(completion.ctx, result);
 
-        if (active_requests == AsyncHTTP.max_simultaneous_requests) {
+        if (active_requests >= AsyncHTTP.max_simultaneous_requests.load(.Monotonic)) {
             http_thread.drainEvents();
         }
     }
@@ -1499,27 +1541,33 @@ pub fn doRedirect(this: *HTTPClient) void {
         tunnel.deinit();
         this.proxy_tunnel = null;
     }
+    if (this.aborted != null) {
+        _ = socket_async_http_abort_tracker.swapRemove(this.async_http_id);
+    }
     return this.start("", body_out_str);
 }
-
+pub fn isHTTPS(this: *HTTPClient) bool {
+    if (this.http_proxy) |proxy| {
+        if (proxy.isHTTPS()) {
+            return true;
+        }
+        return false;
+    }
+    if (this.url.isHTTPS()) {
+        return true;
+    }
+    return false;
+}
 pub fn start(this: *HTTPClient, body: []const u8, body_out_str: *MutableString) void {
     body_out_str.reset();
 
     std.debug.assert(this.state.response_message_buffer.list.capacity == 0);
     this.state = InternalState.init(body, body_out_str);
 
-    if (this.http_proxy) |proxy| {
-        if (proxy.isHTTPS()) {
-            this.start_(true);
-        } else {
-            this.start_(false);
-        }
+    if (this.isHTTPS()) {
+        this.start_(true);
     } else {
-        if (this.url.isHTTPS()) {
-            this.start_(true);
-        } else {
-            this.start_(false);
-        }
+        this.start_(false);
     }
 }
 
@@ -1538,6 +1586,7 @@ fn start_(this: *HTTPClient, comptime is_ssl: bool) void {
     if (socket.isClosed() and (this.state.response_stage != .done and this.state.response_stage != .fail)) {
         this.fail(error.ConnectionClosed);
         std.debug.assert(this.state.fail != error.NoError);
+        return;
     }
 }
 
@@ -2113,6 +2162,9 @@ pub fn closeAndAbort(this: *HTTPClient, comptime is_ssl: bool, socket: NewHTTPCo
 }
 
 fn fail(this: *HTTPClient, err: anyerror) void {
+    if (this.aborted != null) {
+        _ = socket_async_http_abort_tracker.swapRemove(this.async_http_id);
+    }
     this.state.request_stage = .fail;
     this.state.response_stage = .fail;
     this.state.fail = err;
@@ -2157,6 +2209,10 @@ pub fn setTimeout(this: *HTTPClient, socket: anytype, amount: c_uint) void {
 
 pub fn done(this: *HTTPClient, comptime is_ssl: bool, ctx: *NewHTTPContext(is_ssl), socket: NewHTTPContext(is_ssl).HTTPSocket) void {
     if (this.state.stage != .done and this.state.stage != .fail) {
+        if (this.aborted != null) {
+            _ = socket_async_http_abort_tracker.swapRemove(this.async_http_id);
+        }
+
         log("done", .{});
 
         var out_str = this.state.body_out_str.?;

@@ -1,0 +1,23 @@
+{
+  "name": "test",
+  "devDependencies": {},
+  "dependencies": {
+    "@swc/core": "^1.3.38",
+    "@types/react": "^18.0.28",
+    "@types/react-dom": "^18.0.11",
+    "bktree-fast": "^0.0.7",
+    "body-parser": "^1.20.2",
+    "esbuild": "^0.17.11",
+    "express": "^4.18.2",
+    "iconv-lite": "^0.6.3",
+    "lodash": "^4.17.21",
+    "svelte": "^3.55.1",
+    "typescript": "^5.0.2",
+    "undici": "^5.20.0"
+  },
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "postinstall": "cd node_modules/bktree-fast && bun x node-gyp configure build"
+  }
+}

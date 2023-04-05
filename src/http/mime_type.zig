@@ -18,6 +18,23 @@ const MimeType = @This();
 value: string,
 category: Category,
 
+pub const Map = bun.StringHashMap(MimeType);
+
+pub fn createHashTable(allocator: std.mem.Allocator) !Map {
+    @setCold(true);
+
+    const decls = comptime std.meta.declarations(all);
+
+    var map = Map.init(allocator);
+    try map.ensureTotalCapacity(@truncate(u32, decls.len));
+    @setEvalBranchQuota(4000);
+    inline for (decls) |decl| {
+        map.putAssumeCapacityNoClobber(decl.name, @field(all, decl.name));
+    }
+
+    return map;
+}
+
 pub fn canOpenInEditor(this: MimeType) bool {
     if (this.category == .text or this.category.isCode())
         return true;
@@ -30,6 +47,7 @@ pub fn canOpenInEditor(this: MimeType) bool {
 }
 
 pub const Category = enum {
+    none,
     image,
     text,
     html,
@@ -71,6 +89,7 @@ pub const Category = enum {
     }
 };
 
+pub const none = MimeType.initComptime("", .none);
 pub const other = MimeType.initComptime("application/octet-stream", .other);
 pub const css = MimeType.initComptime("text/css", .css);
 pub const javascript = MimeType.initComptime("text/javascript;charset=utf-8", .javascript);

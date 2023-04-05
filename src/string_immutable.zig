@@ -588,7 +588,7 @@ pub inline fn endsWithChar(self: string, char: u8) bool {
 pub fn withoutTrailingSlash(this: string) []const u8 {
     var href = this;
     while (href.len > 1 and href[href.len - 1] == '/') {
-        href = href[0 .. href.len - 1];
+        href.len -= 1;
     }
 
     return href;
@@ -1220,6 +1220,40 @@ pub fn toUTF16Alloc(allocator: std.mem.Allocator, bytes: []const u8, comptime fa
     return null;
 }
 
+pub fn utf16CodepointWithFFFD(comptime Type: type, input: Type) UTF16Replacement {
+    const c0 = @as(u21, input[0]);
+
+    if (c0 & ~@as(u21, 0x03ff) == 0xd800) {
+        // surrogate pair
+        if (input.len == 1)
+            return .{
+                .len = 1,
+            };
+        //error.DanglingSurrogateHalf;
+        const c1 = @as(u21, input[1]);
+        if (c1 & ~@as(u21, 0x03ff) != 0xdc00)
+            if (input.len == 1) {
+                return .{
+                    .len = 1,
+                };
+            } else {
+                return .{
+                    .fail = true,
+                    .len = 1,
+                    .code_point = unicode_replacement,
+                };
+            };
+        // return error.ExpectedSecondSurrogateHalf;
+
+        return .{ .len = 2, .code_point = 0x10000 + (((c0 & 0x03ff) << 10) | (c1 & 0x03ff)) };
+    } else if (c0 & ~@as(u21, 0x03ff) == 0xdc00) {
+        // return error.UnexpectedSecondSurrogateHalf;
+        return .{ .fail = true, .len = 1, .code_point = unicode_replacement };
+    } else {
+        return .{ .code_point = c0, .len = 1 };
+    }
+}
+
 pub fn utf16Codepoint(comptime Type: type, input: Type) UTF16Replacement {
     const c0 = @as(u21, input[0]);
 
@@ -1249,26 +1283,16 @@ pub fn utf16Codepoint(comptime Type: type, input: Type) UTF16Replacement {
 
 pub fn convertUTF16ToUTF8(list_: std.ArrayList(u8), comptime Type: type, utf16: Type) !std.ArrayList(u8) {
     var list = list_;
-
-    var remaining_input = utf16;
-    var start: usize = 0;
-
-    const replacement_char = [_]u8{ 239, 191, 189 };
-    var result = bun.simdutf.convert.utf16.to.utf8.with_errors.le(remaining_input, list.items.ptr[start..list.capacity]);
-    list.items.len = result.count;
-    while (result.status == .surrogate) {
-        try list.ensureUnusedCapacity(3);
-        list.items.len += 3;
-        start += result.count;
-
-        list.items[start..][0..replacement_char.len].* = replacement_char;
-        remaining_input = remaining_input[result.count + 1 ..];
-        start += replacement_char.len;
-
-        result = bun.simdutf.convert.utf16.to.utf8.with_errors.le(remaining_input, list.items.ptr[start..list.capacity]);
-        list.items.len += result.count;
+    var result = bun.simdutf.convert.utf16.to.utf8.with_errors.le(
+        utf16,
+        list.items.ptr[0..list.capacity],
+    );
+    if (result.status == .surrogate) {
+        // Slow path: there was invalid UTF-16, so we need to convert it without simdutf.
+        return toUTF8ListWithTypeBun(list, Type, utf16);
     }
 
+    list.items.len = result.count;
     return list;
 }
 
@@ -1304,7 +1328,7 @@ pub fn toUTF8ListWithTypeBun(list_: std.ArrayList(u8), comptime Type: type, utf1
         const to_copy = utf16_remaining[0..i];
         utf16_remaining = utf16_remaining[i..];
 
-        const replacement = utf16Codepoint(Type, utf16_remaining);
+        const replacement = utf16CodepointWithFFFD(Type, utf16_remaining);
         utf16_remaining = utf16_remaining[replacement.len..];
 
         const count: usize = replacement.utf8Width();
@@ -2122,7 +2146,7 @@ pub fn escapeHTMLForLatin1Input(allocator: std.mem.Allocator, latin1: []const u8
 
                             buf = try std.ArrayList(u8).initCapacity(allocator, latin1.len + @as(usize, Scalar.lengths[c]));
                             const copy_len = @ptrToInt(ptr) - @ptrToInt(latin1.ptr);
-                            @memcpy(buf.items.ptr, latin1.ptr, copy_len - 1);
+                            @memcpy(buf.items.ptr, latin1.ptr, copy_len);
                             buf.items.len = copy_len;
                             any_needs_escape = true;
                             break :scan_and_allocate_lazily;
@@ -2550,7 +2574,7 @@ pub fn latin1ToCodepointBytesAssumeNotASCII16(char: u32) u16 {
     return latin1_to_utf16_conversion_table[@truncate(u8, char)];
 }
 
-pub fn copyUTF16IntoUTF8(buf: []u8, comptime Type: type, utf16: Type) EncodeIntoResult {
+pub fn copyUTF16IntoUTF8(buf: []u8, comptime Type: type, utf16: Type, comptime allow_partial_write: bool) EncodeIntoResult {
     if (comptime Type == []const u16) {
         if (bun.FeatureFlags.use_simdutf) {
             if (utf16.len == 0)
@@ -2564,28 +2588,31 @@ pub fn copyUTF16IntoUTF8(buf: []u8, comptime Type: type, utf16: Type) EncodeInto
             else
                 buf.len;
 
-            return copyUTF16IntoUTF8WithBuffer(buf, Type, utf16, trimmed, out_len);
+            return copyUTF16IntoUTF8WithBuffer(buf, Type, utf16, trimmed, out_len, allow_partial_write);
         }
     }
 
-    return copyUTF16IntoUTF8WithBuffer(buf, Type, utf16, utf16, utf16.len);
+    return copyUTF16IntoUTF8WithBuffer(buf, Type, utf16, utf16, utf16.len, allow_partial_write);
 }
 
-pub fn copyUTF16IntoUTF8WithBuffer(buf: []u8, comptime Type: type, utf16: Type, trimmed: Type, out_len: usize) EncodeIntoResult {
+pub fn copyUTF16IntoUTF8WithBuffer(buf: []u8, comptime Type: type, utf16: Type, trimmed: Type, out_len: usize, comptime allow_partial_write: bool) EncodeIntoResult {
     var remaining = buf;
     var utf16_remaining = utf16;
     var ended_on_non_ascii = false;
 
-    if (comptime Type == []const u16) {
-        if (bun.FeatureFlags.use_simdutf) {
-            log("UTF16 {d} -> UTF8 {d}", .{ utf16.len, out_len });
+    brk: {
+        if (comptime Type == []const u16) {
+            if (bun.FeatureFlags.use_simdutf) {
+                log("UTF16 {d} -> UTF8 {d}", .{ utf16.len, out_len });
+                if (remaining.len >= out_len) {
+                    const result = bun.simdutf.convert.utf16.to.utf8.with_errors.le(trimmed, remaining);
+                    if (result.status == .surrogate) break :brk;
 
-            if (remaining.len >= out_len) {
-                const result = bun.simdutf.convert.utf16.to.utf8.with_errors.le(trimmed, remaining[0..out_len]);
-                return EncodeIntoResult{
-                    .read = @truncate(u32, trimmed.len),
-                    .written = @truncate(u32, result.count),
-                };
+                    return EncodeIntoResult{
+                        .read = @truncate(u32, trimmed.len),
+                        .written = @truncate(u32, result.count),
+                    };
+                }
             }
         }
     }
@@ -2599,12 +2626,12 @@ pub fn copyUTF16IntoUTF8WithBuffer(buf: []u8, comptime Type: type, utf16: Type, 
         if (@min(utf16_remaining.len, remaining.len) == 0)
             break;
 
-        const replacement = utf16Codepoint(Type, utf16_remaining);
+        const replacement = utf16CodepointWithFFFD(Type, utf16_remaining);
 
         const width: usize = replacement.utf8Width();
         if (width > remaining.len) {
             ended_on_non_ascii = width > 1;
-            switch (width) {
+            if (comptime allow_partial_write) switch (width) {
                 2 => {
                     if (remaining.len > 0) {
                         //only first will be written
@@ -2642,7 +2669,7 @@ pub fn copyUTF16IntoUTF8WithBuffer(buf: []u8, comptime Type: type, utf16: Type, 
                         3 => {
                             remaining[0] = @truncate(u8, 0xF0 | (replacement.code_point >> 18));
                             remaining[1] = @truncate(u8, 0x80 | (replacement.code_point >> 12) & 0x3F);
-                            remaining[3] = @truncate(u8, 0x80 | (replacement.code_point >> 0) & 0x3F);
+                            remaining[2] = @truncate(u8, 0x80 | (replacement.code_point >> 6) & 0x3F);
                             remaining = remaining[remaining.len..];
                         },
                         else => {},
@@ -2650,7 +2677,7 @@ pub fn copyUTF16IntoUTF8WithBuffer(buf: []u8, comptime Type: type, utf16: Type, 
                 },
 
                 else => {},
-            }
+            };
             break;
         }
 
@@ -3160,6 +3187,18 @@ test "indexOfNeedsEscape" {
     try std.testing.expectEqual(out.?, 48);
 }
 
+pub fn indexOfCharZ(sliceZ: [:0]const u8, char: u8) ?u63 {
+    const ptr = bun.C.strchr(sliceZ.ptr, char) orelse return null;
+    const pos = @ptrToInt(ptr) - @ptrToInt(sliceZ.ptr);
+
+    if (comptime Environment.allow_assert)
+        std.debug.assert(@ptrToInt(sliceZ.ptr) <= @ptrToInt(ptr) and
+            @ptrToInt(ptr) < @ptrToInt(sliceZ.ptr + sliceZ.len) and
+            pos <= sliceZ.len);
+
+    return @truncate(u63, pos);
+}
+
 pub fn indexOfChar(slice: []const u8, char: u8) ?u32 {
     var remaining = slice;
     if (remaining.len == 0)
@@ -3257,8 +3296,9 @@ pub fn indexOfNotChar(slice: []const u8, char: u8) ?u32 {
     return null;
 }
 
+const invalid_char: u8 = 0xff;
 const hex_table: [255]u8 = brk: {
-    var values: [255]u8 = [_]u8{0} ** 255;
+    var values: [255]u8 = [_]u8{invalid_char} ** 255;
     values['0'] = 0;
     values['1'] = 1;
     values['2'] = 2;
@@ -3285,20 +3325,39 @@ const hex_table: [255]u8 = brk: {
     break :brk values;
 };
 
-pub fn decodeHexToBytes(destination: []u8, comptime Char: type, source: []const Char) usize {
+pub fn decodeHexToBytes(destination: []u8, comptime Char: type, source: []const Char) !usize {
+    return _decodeHexToBytes(destination, Char, source, false);
+}
+
+pub fn decodeHexToBytesTruncate(destination: []u8, comptime Char: type, source: []const Char) usize {
+    return _decodeHexToBytes(destination, Char, source, true) catch 0;
+}
+
+inline fn _decodeHexToBytes(destination: []u8, comptime Char: type, source: []const Char, comptime truncate: bool) !usize {
     var remain = destination;
     var input = source;
 
-    while (input.len > 1 and remain.len > 0) {
+    while (remain.len > 0 and input.len > 1) {
         const int = input[0..2].*;
+        if (comptime @sizeOf(Char) > 1) {
+            if (int[0] > std.math.maxInt(u8) or int[1] > std.math.maxInt(u8)) {
+                if (comptime truncate) break;
+                return error.InvalidByteSequence;
+            }
+        }
         const a = hex_table[@truncate(u8, int[0])];
         const b = hex_table[@truncate(u8, int[1])];
-        if (a == 255 or b == 255) {
-            break;
+        if (a == invalid_char or b == invalid_char) {
+            if (comptime truncate) break;
+            return error.InvalidByteSequence;
         }
         remain[0] = a << 4 | b;
         remain = remain[1..];
         input = input[2..];
+    }
+
+    if (comptime !truncate) {
+        if (remain.len > 0 and input.len > 0) return error.InvalidByteSequence;
     }
 
     return destination.len - remain.len;
@@ -3615,7 +3674,7 @@ pub fn formatUTF16Type(comptime Slice: type, slice_: Slice, writer: anytype) !vo
     var slice = slice_;
 
     while (slice.len > 0) {
-        const result = strings.copyUTF16IntoUTF8(chunk, Slice, slice);
+        const result = strings.copyUTF16IntoUTF8(chunk, Slice, slice, true);
         if (result.read == 0 or result.written == 0)
             break;
         try writer.writeAll(chunk[0..result.written]);

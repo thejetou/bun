@@ -103,7 +103,7 @@ Alternatively, use the `done` callback to signal completion. If you include the 
 import { expect, test } from "bun:test";
 
 test("2 * 2", done => {
-  Promise.resolve(2 * 2).then(done => {
+  Promise.resolve(2 * 2).then(result => {
     expect(result).toEqual(4);
     done();
   });
@@ -196,15 +196,15 @@ Bun implements the following matchers. Full Jest compatibility is on the roadmap
 - [ ] [`.toHaveLastReturnedWith()`](https://jestjs.io/docs/expect#tohavelastreturnedwithvalue)
 - [ ] [`.toHaveNthReturnedWith()`](https://jestjs.io/docs/expect#tohaventhreturnedwithnthcall-value)
 - [ ] [`.toBeCloseTo()`](https://jestjs.io/docs/expect#tobeclosetonumber-numdigits)
-- [ ] [`.toBeGreaterThan()`](https://jestjs.io/docs/expect#tobegreaterthannumber--bigint)
-- [ ] [`.toBeGreaterThanOrEqual()`](https://jestjs.io/docs/expect#tobegreaterthanorequalnumber--bigint)
-- [ ] [`.toBeLessThan()`](https://jestjs.io/docs/expect#tobelessthannumber--bigint)
-- [ ] [`.toBeLessThanOrEqual()`](https://jestjs.io/docs/expect#tobelessthanorequalnumber--bigint)
-- [ ] [`.toBeInstanceOf()`](https://jestjs.io/docs/expect#tobeinstanceofclass)
+- [x] [`.toBeGreaterThan()`](https://jestjs.io/docs/expect#tobegreaterthannumber--bigint)
+- [x] [`.toBeGreaterThanOrEqual()`](https://jestjs.io/docs/expect#tobegreaterthanorequalnumber--bigint)
+- [x] [`.toBeLessThan()`](https://jestjs.io/docs/expect#tobelessthannumber--bigint)
+- [x] [`.toBeLessThanOrEqual()`](https://jestjs.io/docs/expect#tobelessthanorequalnumber--bigint)
+- [x] [`.toBeInstanceOf()`](https://jestjs.io/docs/expect#tobeinstanceofclass) (Bun v0.5.8+)
 - [ ] [`.toContainEqual()`](https://jestjs.io/docs/expect#tocontainequalitem)
 - [ ] [`.toMatch()`](https://jestjs.io/docs/expect#tomatchregexp--string)
 - [ ] [`.toMatchObject()`](https://jestjs.io/docs/expect#tomatchobjectobject)
-- [ ] [`.toMatchSnapshot()`](https://jestjs.io/docs/expect#tomatchsnapshotpropertymatchers-hint)
+- [x] [`.toMatchSnapshot()`](https://jestjs.io/docs/expect#tomatchsnapshotpropertymatchers-hint) (Bun v0.5.8+)
 - [ ] [`.toMatchInlineSnapshot()`](https://jestjs.io/docs/expect#tomatchinlinesnapshotpropertymatchers-inlinesnapshot)
 - [ ] [`.toThrowErrorMatchingSnapshot()`](https://jestjs.io/docs/expect#tothrowerrormatchingsnapshothint)
 - [ ] [`.toThrowErrorMatchingInlineSnapshot()`](https://jestjs.io/docs/expect#tothrowerrormatchinginlinesnapshotinlinesnapshot)

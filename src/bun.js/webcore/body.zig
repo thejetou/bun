@@ -75,7 +75,7 @@ pub const Body = struct {
         };
     }
 
-    pub fn writeFormat(this: *const Body, formatter: *JSC.Formatter, writer: anytype, comptime enable_ansi_colors: bool) !void {
+    pub fn writeFormat(this: *const Body, comptime Formatter: type, formatter: *Formatter, writer: anytype, comptime enable_ansi_colors: bool) !void {
         const Writer = @TypeOf(writer);
 
         try formatter.writeIndent(Writer, writer);
@@ -98,7 +98,7 @@ pub const Body = struct {
             try formatter.printComma(Writer, writer, enable_ansi_colors);
             try writer.writeAll("\n");
             try formatter.writeIndent(Writer, writer);
-            try this.value.Blob.writeFormat(formatter, writer, enable_ansi_colors);
+            try this.value.Blob.writeFormat(Formatter, formatter, writer, enable_ansi_colors);
         } else if (this.value == .InternalBlob) {
             try formatter.printComma(Writer, writer, enable_ansi_colors);
             try writer.writeAll("\n");
@@ -138,18 +138,20 @@ pub const Body = struct {
             return that;
         }
 
-        pub fn init(allocator: std.mem.Allocator, ctx: *JSGlobalObject, response_init: JSC.JSValue, js_type: JSC.JSValue.JSType) !?Init {
+        pub fn init(allocator: std.mem.Allocator, ctx: *JSGlobalObject, response_init: JSC.JSValue) !?Init {
             var result = Init{ .status_code = 200 };
 
             if (!response_init.isCell())
                 return null;
 
-            if (js_type == .DOMWrapper) {
+            if (response_init.jsType() == .DOMWrapper) {
                 // fast path: it's a Request object or a Response object
                 // we can skip calling JS getters
                 if (response_init.as(Request)) |req| {
                     if (req.headers) |headers| {
-                        result.headers = headers.cloneThis(ctx);
+                        if (!headers.isEmpty()) {
+                            result.headers = headers.cloneThis(ctx);
+                        }
                     }
 
                     result.method = req.method;
@@ -163,16 +165,23 @@ pub const Body = struct {
 
             if (response_init.fastGet(ctx, .headers)) |headers| {
                 if (headers.as(FetchHeaders)) |orig| {
-                    result.headers = orig.cloneThis(ctx);
+                    if (!orig.isEmpty()) {
+                        result.headers = orig.cloneThis(ctx);
+                    }
                 } else {
                     result.headers = FetchHeaders.createFromJS(ctx.ptr(), headers);
                 }
             }
 
             if (response_init.fastGet(ctx, .status)) |status_value| {
-                const number = status_value.to(i32);
-                if (100 <= number and number < 1000)
+                const number = status_value.coerceToInt64(ctx);
+                if ((200 <= number and number < 600) or number == 101) {
                     result.status_code = @truncate(u16, @intCast(u32, number));
+                } else {
+                    const err = ctx.createRangeErrorInstance("The status provided ({d}) must be 101 or in the range of [200, 599]", .{number});
+                    ctx.throwValue(err);
+                    return null;
+                }
             }
 
             if (response_init.fastGet(ctx, .method)) |method_value| {
@@ -233,10 +242,6 @@ pub const Body = struct {
                 // }
                 switch (action) {
                     .getText, .getJSON, .getBlob, .getArrayBuffer => {
-                        switch (readable.ptr) {
-                            .Blob => unreachable,
-                            else => {},
-                        }
                         value.promise = switch (action) {
                             .getJSON => globalThis.readableStreamToJSON(readable.value),
                             .getArrayBuffer => globalThis.readableStreamToArrayBuffer(readable.value),
@@ -294,6 +299,7 @@ pub const Body = struct {
         Used: void,
         Empty: void,
         Error: JSValue,
+        Null: void,
 
         pub fn toBlobIfPossible(this: *Value) void {
             if (this.* != .Locked)
@@ -355,6 +361,7 @@ pub const Body = struct {
             Used,
             Empty,
             Error,
+            Null,
         };
 
         // pub const empty = Value{ .Empty = void{} };
@@ -363,11 +370,11 @@ pub const Body = struct {
             JSC.markBinding(@src());
 
             switch (this.*) {
-                .Empty => {
-                    return JSValue.jsNull();
-                },
-                .Used => {
+                .Used, .Empty => {
                     return JSC.WebCore.ReadableStream.empty(globalThis);
+                },
+                .Null => {
+                    return JSValue.null;
                 },
                 .InternalBlob,
                 .Blob,
@@ -403,7 +410,7 @@ pub const Body = struct {
                     }
 
                     if (drain_result == .empty or drain_result == .aborted) {
-                        this.* = .{ .Empty = void{} };
+                        this.* = .{ .Null = void{} };
                         return JSC.WebCore.ReadableStream.empty(globalThis);
                     }
 
@@ -436,12 +443,15 @@ pub const Body = struct {
             }
         }
 
-        pub fn fromJS(globalThis: *JSGlobalObject, value: JSValue) ?Value {
+        pub fn fromJS(
+            globalThis: *JSGlobalObject,
+            value: JSValue,
+        ) ?Value {
             value.ensureStillAlive();
 
             if (value.isEmptyOrUndefinedOrNull()) {
                 return Body.Value{
-                    .Empty = void{},
+                    .Null = void{},
                 };
             }
 
@@ -472,6 +482,7 @@ pub const Body = struct {
                 //             blob.bytes[0..blob.bytes.len],
                 //             []const u16,
                 //             str.utf16SliceAligned(),
+                //             true,
                 //         );
                 //         blob.len = @intCast(InlineBlob.IntSize, result.written);
                 //         std.debug.assert(@as(usize, result.read) == str.len);
@@ -720,9 +731,6 @@ pub const Body = struct {
                         bun.default_allocator,
                         JSC.VirtualMachine.get().global,
                     );
-                    if (this.InternalBlob.was_string) {
-                        new_blob.content_type = MimeType.text.value;
-                    }
 
                     this.* = .{ .Used = {} };
                     return new_blob;
@@ -767,7 +775,10 @@ pub const Body = struct {
                 else => .{ .Blob = Blob.initEmpty(undefined) },
             };
 
-            this.* = .{ .Used = {} };
+            this.* = if (this.* == .Null)
+                .{ .Null = {} }
+            else
+                .{ .Used = {} };
             return any_blob;
         }
 
@@ -832,12 +843,12 @@ pub const Body = struct {
 
             if (tag == .InternalBlob) {
                 this.InternalBlob.clearAndFree();
-                this.* = Value{ .Empty = {} }; //Value.empty;
+                this.* = Value{ .Null = {} };
             }
 
             if (tag == .Blob) {
                 this.Blob.deinit();
-                this.* = Value{ .Empty = {} }; //Value.empty;
+                this.* = Value{ .Null = {} };
             }
 
             if (tag == .Error) {
@@ -865,6 +876,10 @@ pub const Body = struct {
                 return Value{ .Blob = this.Blob.dupe() };
             }
 
+            if (this.* == .Null) {
+                return Value{ .Null = {} };
+            }
+
             return Value{ .Empty = {} };
         }
     };
@@ -875,7 +890,7 @@ pub const Body = struct {
                 .headers = null,
                 .status_code = 404,
             },
-            .value = Value{ .Empty = {} }, //Value.empty,
+            .value = Value{ .Null = {} },
         };
     }
 
@@ -884,7 +899,7 @@ pub const Body = struct {
             .init = Init{
                 .status_code = 200,
             },
-            .value = Value{ .Empty = {} }, //Value.empty,
+            .value = Value{ .Null = {} },
         };
     }
 
@@ -897,7 +912,6 @@ pub const Body = struct {
             value,
             false,
             JSValue.zero,
-            .Cell,
         );
     }
 
@@ -905,14 +919,12 @@ pub const Body = struct {
         globalThis: *JSGlobalObject,
         value: JSValue,
         init: JSValue,
-        init_type: JSValue.JSType,
     ) ?Body {
         return extractBody(
             globalThis,
             value,
             true,
             init,
-            init_type,
         );
     }
 
@@ -922,20 +934,21 @@ pub const Body = struct {
         value: JSValue,
         comptime has_init: bool,
         init: JSValue,
-        init_type: JSC.JSValue.JSType,
     ) ?Body {
         var body = Body{
-            .value = Value{ .Empty = {} },
+            .value = Value{ .Null = {} },
             .init = Init{ .headers = null, .status_code = 200 },
         };
         var allocator = getAllocator(globalThis);
 
         if (comptime has_init) {
-            if (Init.init(allocator, globalThis, init, init_type)) |maybeInit| {
+            if (Init.init(allocator, globalThis, init)) |maybeInit| {
                 if (maybeInit) |init_| {
                     body.init = init_;
                 }
-            } else |_| {}
+            } else |_| {
+                return null;
+            }
         }
 
         body.value = Value.fromJS(globalThis, value) orelse return null;
@@ -976,10 +989,6 @@ pub fn BodyMixin(comptime Type: type) type {
         ) callconv(.C) JSValue {
             var body: *Body.Value = this.getBodyValue();
 
-            if (body.* == .Empty) {
-                return JSValue.jsNull();
-            }
-
             if (body.* == .Used) {
                 // TODO: make this closed
                 return JSC.WebCore.ReadableStream.empty(globalThis);
@@ -1001,7 +1010,6 @@ pub fn BodyMixin(comptime Type: type) type {
             _: *JSC.CallFrame,
         ) callconv(.C) JSC.JSValue {
             var value: *Body.Value = this.getBodyValue();
-
             if (value.* == .Used) {
                 return handleBodyAlreadyUsed(globalObject);
             }
@@ -1064,8 +1072,12 @@ pub fn BodyMixin(comptime Type: type) type {
             }
 
             var encoder = this.getFormDataEncoding() orelse {
-                globalObject.throw("Invalid MIME type", .{});
-                return .zero;
+                // TODO: catch specific errors from getFormDataEncoding
+                const err = globalObject.createTypeErrorInstance("Can't decode form data from body because of incorrect MIME type/boundary", .{});
+                return JSC.JSPromise.rejectedPromiseValue(
+                    globalObject,
+                    err,
+                );
             };
 
             if (value.* == .Locked) {
@@ -1083,7 +1095,7 @@ pub fn BodyMixin(comptime Type: type) type {
             ) catch |err| {
                 return JSC.JSPromise.rejectedPromiseValue(
                     globalObject,
-                    globalObject.createErrorInstance(
+                    globalObject.createTypeErrorInstance(
                         "FormData parse error {s}",
                         .{
                             @errorName(err),
@@ -1121,6 +1133,17 @@ pub fn BodyMixin(comptime Type: type) type {
             var ptr = getAllocator(globalObject).create(Blob) catch unreachable;
             ptr.* = blob;
             blob.allocator = getAllocator(globalObject);
+
+            if (blob.content_type.len == 0 and blob.store != null) {
+                if (this.getFetchHeaders()) |fetch_headers| {
+                    if (fetch_headers.fastGet(.ContentType)) |content_type| {
+                        blob.store.?.mime_type = MimeType.init(content_type.slice());
+                    }
+                } else {
+                    blob.store.?.mime_type = MimeType.text;
+                }
+            }
+
             return JSC.JSPromise.resolvedPromiseValue(globalObject, ptr.toJS(globalObject));
         }
     };

@@ -96,6 +96,12 @@ pub const Response = struct {
         return &this.body.value;
     }
 
+    pub fn getFetchHeaders(
+        this: *Response,
+    ) ?*FetchHeaders {
+        return this.body.init.headers;
+    }
+
     pub inline fn statusCode(this: *const Response) u16 {
         return this.body.init.status_code;
     }
@@ -113,7 +119,7 @@ pub const Response = struct {
 
     pub const Props = struct {};
 
-    pub fn writeFormat(this: *const Response, formatter: *JSC.Formatter, writer: anytype, comptime enable_ansi_colors: bool) !void {
+    pub fn writeFormat(this: *const Response, comptime Formatter: type, formatter: *Formatter, writer: anytype, comptime enable_ansi_colors: bool) !void {
         const Writer = @TypeOf(writer);
         try writer.print("Response ({}) {{\n", .{bun.fmt.size(this.body.len())});
         {
@@ -145,7 +151,7 @@ pub const Response = struct {
             formatter.printComma(Writer, writer, enable_ansi_colors) catch unreachable;
             try writer.writeAll("\n");
             formatter.resetLine();
-            try this.body.writeFormat(formatter, writer, enable_ansi_colors);
+            try this.body.writeFormat(Formatter, formatter, writer, enable_ansi_colors);
         }
         try writer.writeAll("\n");
         try formatter.writeIndent(Writer, writer);
@@ -173,7 +179,7 @@ pub const Response = struct {
             return ZigString.init("error").toValue(globalThis);
         }
 
-        return ZigString.init("basic").toValue(globalThis);
+        return ZigString.init("default").toValue(globalThis);
     }
 
     pub fn getStatusText(
@@ -331,7 +337,7 @@ pub const Response = struct {
 
                 return response.body.value.InternalBlob.contentType();
             },
-            .Used, .Locked, .Empty, .Error => return default.value,
+            .Null, .Used, .Locked, .Empty, .Error => return default.value,
         }
     }
 
@@ -400,7 +406,7 @@ pub const Response = struct {
             if (init.isUndefinedOrNull()) {} else if (init.isNumber()) {
                 response.body.init.status_code = @intCast(u16, @min(@max(0, init.toInt32()), std.math.maxInt(u16)));
             } else {
-                if (Body.Init.init(getAllocator(globalThis), globalThis, init, init.jsType()) catch null) |_init| {
+                if (Body.Init.init(getAllocator(globalThis), globalThis, init) catch null) |_init| {
                     response.body.init = _init;
                 }
             }
@@ -446,7 +452,7 @@ pub const Response = struct {
             if (init.isUndefinedOrNull()) {} else if (init.isNumber()) {
                 response.body.init.status_code = @intCast(u16, @min(@max(0, init.toInt32()), std.math.maxInt(u16)));
             } else {
-                if (Body.Init.init(getAllocator(globalThis), globalThis, init, init.jsType()) catch null) |_init| {
+                if (Body.Init.init(getAllocator(globalThis), globalThis, init) catch null) |_init| {
                     response.body.init = _init;
                     response.body.init.status_code = 302;
                 }
@@ -484,7 +490,14 @@ pub const Response = struct {
         globalThis: *JSC.JSGlobalObject,
         callframe: *JSC.CallFrame,
     ) callconv(.C) ?*Response {
-        const args_list = callframe.arguments(4);
+        const args_list = brk: {
+            var args = callframe.arguments(2);
+            if (args.len > 1 and args.ptr[1].isEmptyOrUndefinedOrNull()) {
+                args.len = 1;
+            }
+            break :brk args;
+        };
+
         const arguments = args_list.ptr[0..args_list.len];
         const body: Body = @as(?Body, brk: {
             switch (arguments.len) {
@@ -495,14 +508,15 @@ pub const Response = struct {
                     break :brk Body.extract(globalThis, arguments[0]);
                 },
                 else => {
-                    switch (arguments[1].jsType()) {
-                        .Object, .FinalObject, .DOMWrapper => |js_type| {
-                            break :brk Body.extractWithInit(globalThis, arguments[0], arguments[1], js_type);
-                        },
-                        else => {
-                            break :brk Body.extract(globalThis, arguments[0]);
-                        },
+                    if (arguments[1].isObject()) {
+                        break :brk Body.extractWithInit(globalThis, arguments[0], arguments[1]);
                     }
+
+                    std.debug.assert(!arguments[1].isEmptyOrUndefinedOrNull());
+
+                    const err = globalThis.createTypeErrorInstance("Expected options to be one of: null, undefined, or object", .{});
+                    globalThis.throwValue(err);
+                    break :brk null;
                 },
             }
             unreachable;
@@ -608,6 +622,8 @@ pub const Fetch = struct {
     );
 
     pub const FetchTasklet = struct {
+        const log = Output.scoped(.FetchTasklet, false);
+
         http: ?*HTTPClient.AsyncHTTP = null,
         result: HTTPClient.HTTPClientResult = .{},
         javascript_vm: *VirtualMachine = undefined,
@@ -623,7 +639,7 @@ pub const Fetch = struct {
         /// We always clone url and proxy (if informed)
         url_proxy_buffer: []const u8 = "",
 
-        signal: ?*JSC.AbortSignal = null,
+        signal: ?*JSC.WebCore.AbortSignal = null,
         aborted: std.atomic.Atomic(bool) = std.atomic.Atomic(bool).init(false),
 
         // must be stored because AbortSignal stores reason weakly
@@ -713,17 +729,23 @@ pub const Fetch = struct {
 
             if (this.result.isTimeout()) {
                 // Timeout without reason
-                return JSC.AbortSignal.createTimeoutError(JSC.ZigString.static("The operation timed out"), &JSC.ZigString.Empty, this.global_this);
+                return JSC.WebCore.AbortSignal.createTimeoutError(JSC.ZigString.static("The operation timed out"), &JSC.ZigString.Empty, this.global_this);
             }
 
             if (this.result.isAbort()) {
                 // Abort without reason
-                return JSC.AbortSignal.createAbortError(JSC.ZigString.static("The user aborted a request"), &JSC.ZigString.Empty, this.global_this);
+                return JSC.WebCore.AbortSignal.createAbortError(JSC.ZigString.static("The user aborted a request"), &JSC.ZigString.Empty, this.global_this);
             }
 
             const fetch_error = JSC.SystemError{
                 .code = ZigString.init(@errorName(this.result.fail)),
-                .message = ZigString.init("fetch() failed"),
+                .message = switch (this.result.fail) {
+                    error.ConnectionClosed => ZigString.init("The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()"),
+                    error.FailedToOpenSocket => ZigString.init("Was there a typo in the url or port?"),
+                    error.TooManyRedirects => ZigString.init("The response redirected too many times. For more information, pass `verbose: true` in the second argument to fetch()"),
+                    error.ConnectionRefused => ZigString.init("Unable to connect. Is the computer able to access the url?"),
+                    else => ZigString.init("fetch() failed. For more information, pass `verbose: true` in the second argument to fetch()"),
+                },
                 .path = ZigString.init(this.http.?.url.href),
             };
 
@@ -817,24 +839,12 @@ pub const Fetch = struct {
                 proxy = jsc_vm.bundler.env.getHttpProxy(fetch_options.url);
             }
 
-            fetch_tasklet.http.?.* = HTTPClient.AsyncHTTP.init(
-                allocator,
-                fetch_options.method,
-                fetch_options.url,
-                fetch_options.headers.entries,
-                fetch_options.headers.buf.items,
-                &fetch_tasklet.response_buffer,
-                fetch_tasklet.request_body.slice(),
-                fetch_options.timeout,
-                HTTPClient.HTTPClientResult.Callback.New(
-                    *FetchTasklet,
-                    FetchTasklet.callback,
-                ).init(
-                    fetch_tasklet,
-                ),
-                proxy,
-                if (fetch_tasklet.signal != null) &fetch_tasklet.aborted else null,
-            );
+            fetch_tasklet.http.?.* = HTTPClient.AsyncHTTP.init(allocator, fetch_options.method, fetch_options.url, fetch_options.headers.entries, fetch_options.headers.buf.items, &fetch_tasklet.response_buffer, fetch_tasklet.request_body.slice(), fetch_options.timeout, HTTPClient.HTTPClientResult.Callback.New(
+                *FetchTasklet,
+                FetchTasklet.callback,
+            ).init(
+                fetch_tasklet,
+            ), proxy, if (fetch_tasklet.signal != null) &fetch_tasklet.aborted else null);
 
             if (!fetch_options.follow_redirects) {
                 fetch_tasklet.http.?.client.remaining_redirect_count = 0;
@@ -851,10 +861,15 @@ pub const Fetch = struct {
         }
 
         pub fn abortListener(this: *FetchTasklet, reason: JSValue) void {
+            log("abortListener", .{});
             reason.ensureStillAlive();
             this.abort_reason = reason;
             reason.protect();
             this.aborted.store(true, .Monotonic);
+
+            if (this.http != null) {
+                HTTPClient.http_thread.scheduleShutdown(this.http.?);
+            }
         }
 
         const FetchOptions = struct {
@@ -869,7 +884,7 @@ pub const Fetch = struct {
             follow_redirects: bool = true,
             proxy: ?ZigURL = null,
             url_proxy_buffer: []const u8 = "",
-            signal: ?*JSC.AbortSignal = null,
+            signal: ?*JSC.WebCore.AbortSignal = null,
             globalThis: ?*JSGlobalObject,
         };
 
@@ -933,7 +948,7 @@ pub const Fetch = struct {
         var verbose = false;
         var proxy: ?ZigURL = null;
         var follow_redirects = true;
-        var signal: ?*JSC.AbortSignal = null;
+        var signal: ?*JSC.WebCore.AbortSignal = null;
 
         var url_proxy_buffer: []const u8 = undefined;
 
@@ -1003,7 +1018,7 @@ pub const Fetch = struct {
                         verbose = verb.toBoolean();
                     }
                     if (options.get(globalThis, "signal")) |signal_arg| {
-                        if (signal_arg.as(JSC.AbortSignal)) |signal_| {
+                        if (signal_arg.as(JSC.WebCore.AbortSignal)) |signal_| {
                             _ = signal_.ref();
                             signal = signal_;
                         }
@@ -1122,7 +1137,7 @@ pub const Fetch = struct {
                         verbose = verb.toBoolean();
                     }
                     if (options.get(globalThis, "signal")) |signal_arg| {
-                        if (signal_arg.as(JSC.AbortSignal)) |signal_| {
+                        if (signal_arg.as(JSC.WebCore.AbortSignal)) |signal_| {
                             _ = signal_.ref();
                             signal = signal_;
                         }

@@ -2,7 +2,9 @@
   "configurations": [
     {
       "name": "Mac",
-      "forcedInclude": ["${workspaceFolder}/src/bun.js/bindings/root.h"],
+      "forcedInclude": [
+        "${workspaceFolder}/src/bun.js/bindings/root.h"
+      ],
       "includePath": [
         "${workspaceFolder}/../webkit-build/include/",
         "${workspaceFolder}/bun-webkit/include/",
@@ -12,13 +14,12 @@
         "${workspaceFolder}/src/bun.js/WebKit/WebKitBuild/Release/WTF/Headers",
         "${workspaceFolder}/src/bun.js/WebKit/WebKitBuild/Release/bmalloc/Headers/",
         "${workspaceFolder}/src/bun.js/bindings/",
-        "${workspaceFolder}/src/bun.js/bindings/WebCore/",
+        "${workspaceFolder}/src/bun.js/bindings/webcore/",
         "${workspaceFolder}/src/bun.js/bindings/sqlite/",
         "${workspaceFolder}/src/bun.js/bindings/webcrypto/",
         "${workspaceFolder}/src/bun.js/builtins/",
         "${workspaceFolder}/src/bun.js/builtins/cpp",
         "${workspaceFolder}/src/deps/boringssl/include/",
-
         "${workspaceFolder}/src/deps",
         "${workspaceFolder}/src/deps/uws/uSockets/src"
       ],
@@ -32,12 +33,11 @@
           "${workspaceFolder}/src/bun.js/WebKit/WebKitBuild/Release/WTF/Headers/**",
           "${workspaceFolder}/src/bun.js/WebKit/WebKitBuild/Release/bmalloc/Headers/**",
           "${workspaceFolder}/src/bun.js/bindings/*",
-          "${workspaceFolder}/src/bun.js/bindings/**",
           "${workspaceFolder}/src/bun.js/bindings/sqlite/",
           "${workspaceFolder}/src/bun.js/bindings/webcrypto/",
-          "${workspaceFolder}/src/bun.js/builtins/**",
-          "${workspaceFolder}/src/bun.js/builtins/cpp/**",
-          "${workspaceFolder}/src/bun.js/modules/**",
+          "${workspaceFolder}/src/bun.js/builtins/*",
+          "${workspaceFolder}/src/bun.js/builtins/cpp/*",
+          "${workspaceFolder}/src/bun.js/modules/*",
           "${workspaceFolder}/src/deps",
           "${workspaceFolder}/src/deps/boringssl/include/",
           "${workspaceFolder}/src/deps/uws/uSockets/src"

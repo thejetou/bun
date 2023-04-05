@@ -44,13 +44,18 @@ pub const Run = struct {
     arena: Arena = undefined,
     any_unhandled: bool = false,
 
-    pub fn boot(ctx: Command.Context, file: std.fs.File, entry_path: string) !void {
+    pub fn boot(ctx_: Command.Context, file: std.fs.File, entry_path: string) !void {
+        var ctx = ctx_;
         JSC.markBinding(@src());
-        @import("bun.js/javascript_core_c_api.zig").JSCInitialize();
+        bun.JSC.initialize();
 
         js_ast.Expr.Data.Store.create(default_allocator);
         js_ast.Stmt.Data.Store.create(default_allocator);
         var arena = try Arena.init();
+
+        if (!ctx.debug.loaded_bunfig) {
+            try bun.CLI.Arguments.loadConfigPath(ctx.allocator, true, "bunfig.toml", &ctx, .RunCommand);
+        }
 
         run = .{
             .vm = try VirtualMachine.init(arena.allocator(), ctx.args, null, ctx.log, null),
@@ -59,9 +64,10 @@ pub const Run = struct {
             .ctx = ctx,
             .entry_path = entry_path,
         };
+
         var vm = run.vm;
         var b = &vm.bundler;
-
+        vm.preload = ctx.preloads;
         vm.argv = ctx.passthrough;
         vm.arena = &run.arena;
         vm.allocator = arena.allocator();
@@ -98,33 +104,8 @@ pub const Run = struct {
             Output.prettyErrorln("\n", .{});
             Global.exit(1);
         };
-        AsyncHTTP.max_simultaneous_requests = 255;
 
-        if (b.env.map.get("BUN_CONFIG_MAX_HTTP_REQUESTS")) |max_http_requests| {
-            load: {
-                AsyncHTTP.max_simultaneous_requests = std.fmt.parseInt(u16, max_http_requests, 10) catch {
-                    vm.log.addErrorFmt(
-                        null,
-                        logger.Loc.Empty,
-                        vm.allocator,
-                        "BUN_CONFIG_MAX_HTTP_REQUESTS value \"{s}\" is not a valid integer between 1 and 65535",
-                        .{max_http_requests},
-                    ) catch unreachable;
-                    break :load;
-                };
-
-                if (AsyncHTTP.max_simultaneous_requests == 0) {
-                    vm.log.addWarningFmt(
-                        null,
-                        logger.Loc.Empty,
-                        vm.allocator,
-                        "BUN_CONFIG_MAX_HTTP_REQUESTS value must be a number between 1 and 65535",
-                        .{},
-                    ) catch unreachable;
-                    AsyncHTTP.max_simultaneous_requests = 255;
-                }
-            }
-        }
+        AsyncHTTP.loadEnv(vm.allocator, vm.log, b.env);
 
         vm.loadExtraEnv();
         vm.is_main_thread = true;
@@ -141,26 +122,51 @@ pub const Run = struct {
 
     pub fn start(this: *Run) void {
         var vm = this.vm;
-        if (this.ctx.debug.hot_reload) {
+        vm.hot_reload = this.ctx.debug.hot_reload;
+        if (this.ctx.debug.hot_reload != .none) {
             JSC.HotReloader.enableHotModuleReloading(vm);
         }
-        var promise = vm.loadEntryPoint(this.entry_path) catch return;
+        if (vm.loadEntryPoint(this.entry_path)) |promise| {
+            if (promise.status(vm.global.vm()) == .Rejected) {
+                vm.runErrorHandler(promise.result(vm.global.vm()), null);
 
-        if (promise.status(vm.global.vm()) == .Rejected) {
-            vm.runErrorHandler(promise.result(vm.global.vm()), null);
-            Global.exit(1);
-        }
-
-        _ = promise.result(vm.global.vm());
-
-        if (vm.log.msgs.items.len > 0) {
-            if (Output.enable_ansi_colors) {
-                vm.log.printForLogLevelWithEnableAnsiColors(Output.errorWriter(), true) catch {};
-            } else {
-                vm.log.printForLogLevelWithEnableAnsiColors(Output.errorWriter(), false) catch {};
+                if (vm.hot_reload != .none) {
+                    vm.eventLoop().tick();
+                    vm.eventLoop().tickPossiblyForever();
+                } else {
+                    Global.exit(1);
+                }
             }
-            Output.prettyErrorln("\n", .{});
-            Output.flush();
+
+            _ = promise.result(vm.global.vm());
+
+            if (vm.log.msgs.items.len > 0) {
+                if (Output.enable_ansi_colors) {
+                    vm.log.printForLogLevelWithEnableAnsiColors(Output.errorWriter(), true) catch {};
+                } else {
+                    vm.log.printForLogLevelWithEnableAnsiColors(Output.errorWriter(), false) catch {};
+                }
+                Output.prettyErrorln("\n", .{});
+                Output.flush();
+            }
+        } else |err| {
+            if (vm.log.msgs.items.len > 0) {
+                if (Output.enable_ansi_colors) {
+                    vm.log.printForLogLevelWithEnableAnsiColors(Output.errorWriter(), true) catch {};
+                } else {
+                    vm.log.printForLogLevelWithEnableAnsiColors(Output.errorWriter(), false) catch {};
+                }
+                Output.flush();
+            } else {
+                Output.prettyErrorln("Error occurred loading entry point: {s}", .{@errorName(err)});
+            }
+
+            if (vm.hot_reload != .none) {
+                vm.eventLoop().tick();
+                vm.eventLoop().tickPossiblyForever();
+            } else {
+                Global.exit(1);
+            }
         }
 
         // don't run the GC if we don't actually need to
@@ -181,17 +187,26 @@ pub const Run = struct {
                     vm.onUnhandledError(this.vm.global, this.vm.pending_internal_promise.result(vm.global.vm()));
                 }
 
-                while (vm.eventLoop().tasks.count > 0 or vm.active_tasks > 0 or vm.uws_event_loop.?.active > 0) {
-                    vm.tick();
+                while (true) {
+                    while (vm.eventLoop().tasks.count > 0 or vm.active_tasks > 0 or vm.uws_event_loop.?.active > 0) {
+                        vm.tick();
 
-                    // Report exceptions in hot-reloaded modules
+                        // Report exceptions in hot-reloaded modules
+                        if (this.vm.pending_internal_promise.status(vm.global.vm()) == .Rejected and prev_promise != this.vm.pending_internal_promise) {
+                            prev_promise = this.vm.pending_internal_promise;
+                            vm.onUnhandledError(this.vm.global, this.vm.pending_internal_promise.result(vm.global.vm()));
+                            continue;
+                        }
+
+                        vm.eventLoop().autoTickActive();
+                    }
+
                     if (this.vm.pending_internal_promise.status(vm.global.vm()) == .Rejected and prev_promise != this.vm.pending_internal_promise) {
                         prev_promise = this.vm.pending_internal_promise;
                         vm.onUnhandledError(this.vm.global, this.vm.pending_internal_promise.result(vm.global.vm()));
-                        continue;
                     }
 
-                    vm.eventLoop().autoTickActive();
+                    vm.eventLoop().tickPossiblyForever();
                 }
 
                 if (this.vm.pending_internal_promise.status(vm.global.vm()) == .Rejected and prev_promise != this.vm.pending_internal_promise) {

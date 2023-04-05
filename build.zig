@@ -143,11 +143,6 @@ const FileSource = std.build.FileSource;
 const Module = std.build.Module;
 const fs = std.fs;
 
-const l = enum {
-    Hello,
-    Enum,
-};
-
 pub fn build(b: *Build) !void {
     // Standard target options allows the person running `zig build` to choose
     // what target to build for. Here we do not override the defaults, which
@@ -217,7 +212,6 @@ pub fn build(b: *Build) !void {
         .{ .major = 0, .minor = 0, .patch = 0 };
 
     var obj_step = b.step("obj", "Build bun as a .o file");
-    obj_step.dependOn(&b.addLog("Output: {s}/{s}\n", .{ output_dir, bun_executable_name }).step);
     var obj = b.addObject(.{
         .name = bun_executable_name,
         .root_source_file = FileSource.relative(root_src),
@@ -229,12 +223,12 @@ pub fn build(b: *Build) !void {
             !std.Target.x86.featureSetHas(target.getCpuFeatures(), .avx2));
 
         var git_sha: [:0]const u8 = "";
-        if (std.os.getenvZ("GITHUB_SHA") orelse std.os.getenvZ("GIT_SHA")) |sha| {
-            git_sha = std.heap.page_allocator.dupeZ(u8, sha) catch unreachable;
+        if (b.env_map.get("GITHUB_SHA") orelse b.env_map.get("GIT_SHA")) |sha| {
+            git_sha = b.allocator.dupeZ(u8, sha) catch unreachable;
         } else {
             sha: {
                 const result = std.ChildProcess.exec(.{
-                    .allocator = std.heap.page_allocator,
+                    .allocator = b.allocator,
                     .argv = &.{
                         "git",
                         "rev-parse",
@@ -243,12 +237,9 @@ pub fn build(b: *Build) !void {
                     },
                     .cwd = b.pathFromRoot("."),
                     .expand_arg0 = .expand,
-                }) catch {
-                    std.debug.print("Warning: failed to get git HEAD", .{});
-                    break :sha;
-                };
+                }) catch break :sha;
 
-                git_sha = std.heap.page_allocator.dupeZ(u8, std.mem.trim(u8, result.stdout, "\n \t")) catch unreachable;
+                git_sha = b.allocator.dupeZ(u8, std.mem.trim(u8, result.stdout, "\n \t")) catch unreachable;
             }
         }
 
@@ -284,21 +275,16 @@ pub fn build(b: *Build) !void {
             obj.target.cpu_model = .{ .explicit = &std.Target.aarch64.cpu.generic };
         }
 
-        {
-            obj_step.dependOn(&b.addLog(
-                "Build {s} v{} - v{} ({s})\n",
-                .{
-                    triplet,
-                    min_version,
-                    max_version,
-                    obj.target.getCpuModel().name,
-                },
-            ).step);
-        }
+        // we have to dump to stderr because stdout is read by zls
+        std.io.getStdErr().writer().print("Build {s} v{} - v{} ({s})\n", .{
+            triplet,
+            min_version,
+            max_version,
+            obj.target.getCpuModel().name,
+        }) catch unreachable;
+        std.io.getStdErr().writer().print("Output: {s}/{s}\n\n", .{ output_dir, bun_executable_name }) catch unreachable;
 
         defer obj_step.dependOn(&obj.step);
-
-        // obj.setBuildMode(optimize);
 
         var actual_build_options = default_build_options;
         if (b.option(bool, "generate-sizes", "Generate sizes of things") orelse false) {
@@ -327,9 +313,6 @@ pub fn build(b: *Build) !void {
             obj.link_eh_frame_hdr = true;
             obj.link_function_sections = true;
         }
-
-        var log_step = b.addLog("Destination: {s}/{s}\n", .{ output_dir, bun_executable_name });
-        log_step.step.dependOn(&obj.step);
     }
 
     {
@@ -475,14 +458,8 @@ pub fn build(b: *Build) !void {
         try configureObjectStep(b, headers_obj, @TypeOf(target), target, obj.main_pkg_path.?);
         try linkObjectFiles(b, headers_obj, target);
 
-        {
-            var before = b.addLog("\x1b[" ++ color_map.get("magenta").? ++ "\x1b[" ++ color_map.get("b").? ++ "[{s} tests]" ++ "\x1b[" ++ color_map.get("d").? ++ " ----\n\n" ++ "\x1b[0m", .{"bun"});
-            var after = b.addLog("\x1b[" ++ color_map.get("d").? ++ "–––---\n\n" ++ "\x1b[0m", .{});
-            headers_step.dependOn(&before.step);
-            headers_step.dependOn(&headers_obj.step);
-            headers_step.dependOn(&after.step);
-            headers_obj.addOptions("build_options", default_build_options.step(b));
-        }
+        headers_step.dependOn(&headers_obj.step);
+        headers_obj.addOptions("build_options", default_build_options.step(b));
 
         // var iter = headers_obj.modules.iterator();
         // while (iter.next()) |item| {
@@ -514,6 +491,7 @@ pub fn build(b: *Build) !void {
     }
     if (obj.emit_bin != .no_emit)
         obj.setOutputDir(output_dir);
+
     b.default_step.dependOn(obj_step);
 }
 
