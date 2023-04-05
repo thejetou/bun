@@ -1,52 +1,51 @@
 // See ./README.md for instructions on how to run this benchmark.
-const port = process.env.PORT || 4001;
 const CLIENTS_TO_WAIT_FOR = parseInt(process.env.CLIENTS_COUNT || "", 10) || 16;
+var remainingClients = CLIENTS_TO_WAIT_FOR;
+const port = process.PORT || 4001;
 
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
-var WebSocketServer = require("ws").Server,
-  config = {
-    host: "0.0.0.0",
-    port,
+const uws = require('uWebSockets.js');
+const app = uws.App();
+app.ws('/*', {
+  compression: uws.DISABLED,
+  upgrade: (res, req, context) => {
+    res.upgrade(
+      { name: req.getQuery().startsWith("name") ? req.getQuery().slice(5) : "Client #" + (CLIENTS_TO_WAIT_FOR - remainingClients) },
+      req.getHeader('sec-websocket-key'),
+      req.getHeader('sec-websocket-protocol'),
+      req.getHeader('sec-websocket-extensions'),
+      context
+    );
   },
-  wss = new WebSocketServer(config, function () {
-    console.log(`Waiting for ${CLIENTS_TO_WAIT_FOR} clients to connect..`);
-  });
+  open: (ws) => {
+    ws.subscribe("room");
 
-var clients = [];
+    remainingClients--;
+    console.log(`${ws.getUserData().name} connected (${remainingClients} remain)`);
 
-wss.on("connection", function (ws, { url }) {
-  const name = new URL(new URL(url, "http://localhost:3000")).searchParams.get(
-    "name"
-  );
-  console.log(
-    `${name} connected (${CLIENTS_TO_WAIT_FOR - clients.length} remain)`
-  );
-  clients.push(ws);
-
-  ws.on("message", function (message) {
-    const out = `${name}: ${message}`;
-    for (let client of clients) {
-      client.send(out);
+    if (remainingClients === 0) {
+      console.log("All clients connected");
+      setTimeout(() => {
+        console.log('Starting benchmark by sending "ready" message');
+        app.publish("room", "ready");
+      }, 100);
     }
-  });
-
-  // when a connection is closed
-  ws.on("close", function (ws) {
-    clients.splice(clients.indexOf(ws), 1);
-  });
-
-  if (clients.length === CLIENTS_TO_WAIT_FOR) {
-    sendReadyMessage();
+  },
+  message: (ws, msg) => {
+    const out = `${ws.getUserData().name}: ${new TextDecoder().decode(msg)}`;
+    const ok = app.publish("room", out);
+    if (!ok) {
+      console.log(ok);
+    }
+  },
+  close: () => {
+    remainingClients++;
+  }
+}).listen(port, (listenSocket) => {
+  if (listenSocket) {
+    console.log('Listening to port ' + port);
   }
 });
 
-function sendReadyMessage() {
-  console.log("All clients connected");
-  setTimeout(() => {
-    console.log("Starting benchmark");
-    for (let client of clients) {
-      client.send(`ready`);
-    }
-  }, 100);
-}
+console.log(`Waiting for ${remainingClients} clients to connect...\n`);
